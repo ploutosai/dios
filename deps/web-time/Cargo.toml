@@ -1,0 +1,13 @@
+[package]
+name = "web-time"
+version = "1.1.0"
+edition = "2021"
+
+[features]
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", optional = true }
+
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+miniquad = "0.4.8"

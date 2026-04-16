@@ -1,0 +1,17 @@
+[package]
+name = "anyrender_nonaquad"
+version = "0.1.0"
+edition = "2024"
+description = "Anyrender backend using nonaquad (NanoVG on miniquad)"
+
+[dependencies]
+anyrender = { version = "0.8" }
+kurbo = "0.13"
+peniko = "0.6"
+color = "0.3"
+raw-window-handle = "0.6"
+nona = { path = "../../../../deps/nonaquad/nona" }
+nonaquad = { path = "../../../../deps/nonaquad/nonaquad" }
+# Note: paths are relative to this Cargo.toml (editor/blitz/packages/anyrender_nonaquad/)
+miniquad = "0.4.8"
+once_cell = "1"

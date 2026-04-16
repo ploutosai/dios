@@ -1,0 +1,85 @@
+[package]
+name = "dios"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blitz-dom = { path = "./deps/blitz/packages/blitz-dom", features = ["incremental"] }
+blitz-html = { path = "./deps/blitz/packages/blitz-html" }
+blitz-traits = { path = "./deps/blitz/packages/blitz-traits" }
+blitz-shell-miniquad = { path = "./deps/blitz/packages/blitz-shell-miniquad" }
+blitz-paint = { path = "./deps/blitz/packages/blitz-paint" }
+anyrender_nonaquad = { path = "./deps/blitz/packages/anyrender_nonaquad" }
+anyrender = "0.8"
+miniquad = "0.4.8"
+nona = { path = "./deps/nonaquad/nona" }
+nonaquad = { path = "./deps/nonaquad/nonaquad" }
+skrifa = "0.40"
+linebender_resource_handle = "0.1"
+kurbo = "0.13"
+peniko = "0.6"
+
+# Dioxus
+dioxus = { version = "0.7.5", default-features = false, features = ["macro", "html", "signals", "hooks"] }
+dioxus-native-dom = { path = "./deps/blitz/packages/dioxus-native-dom", default-features = false }
+
+# Editor
+lapce-xi-rope = "0.3.2"
+
+# Profiling. See docs/profiling.md.
+puffin = "0.19"
+
+# LSP — protocol JSON only; we hand-roll Content-Length framing and only
+# touch a handful of LSP messages so we don't pull in `lsp-types` or
+# `lsp-server`. Both are already transitively in the lockfile.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["time", "rt", "rt-multi-thread", "sync"] }
+puffin_http = "0.16"
+
+[[example]]
+name = "nona_shapes"
+path = "examples/nona_shapes.rs"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
+
+[[example]]
+name = "macroquad_editor"
+path = "examples/macroquad_editor.rs"
+
+[[example]]
+name = "nona_web_repro"
+path = "examples/nona_web_repro.rs"
+
+[[example]]
+name = "abspos_repro"
+path = "examples/abspos_repro.rs"
+
+[[example]]
+name = "scroll_columns_repro"
+path = "examples/scroll_columns_repro.rs"
+
+[[example]]
+name = "abspos_stack_repro"
+path = "examples/abspos_stack_repro.rs"
+
+[[example]]
+name = "abspos_stack_noscroll_repro"
+path = "examples/abspos_stack_noscroll_repro.rs"
+
+[[example]]
+name = "abspos_overlay_scroll_repro"
+path = "examples/abspos_overlay_scroll_repro.rs"
+
+[[example]]
+name = "lsp_smoke"
+path = "examples/lsp_smoke.rs"
+
+[patch.crates-io]
+miniquad = { path = "deps/miniquad" }
+subsecond = { path = "deps/subsecond" }
+web-time = { path = "deps/web-time" }

@@ -1,0 +1,2 @@
+# Exclude web bundle/loader assets from GitHub Linguist language statistics.
+web/** linguist-vendored

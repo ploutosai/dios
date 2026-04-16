@@ -1,0 +1,24 @@
+[package]
+name = "blitz-shell-miniquad"
+version = "0.1.0"
+edition = "2024"
+description = "Blitz application shell using miniquad instead of winit"
+
+[dependencies]
+# Blitz dependencies
+blitz-traits = { path = "../blitz-traits" }
+blitz-dom = { path = "../blitz-dom" }
+blitz-paint = { path = "../blitz-paint" }
+anyrender = { version = "0.8" }
+anyrender_nonaquad = { path = "../anyrender_nonaquad" }
+
+# Miniquad
+miniquad = "0.4.8"
+
+# Input
+keyboard-types = { version = "0.7" }
+
+# Other
+futures-util = { version = "0.3" }
+web-time = "1"
+puffin = "0.19"

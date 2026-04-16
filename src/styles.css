@@ -1,0 +1,643 @@
+/* ── Zenburn-ish colorscheme ─────────────────────────────────────────── */
+
+:root {
+    --bg:         #dcd7c2;
+    --bg-alt:     #cbc8b5;
+    --bg-hl:      #c2bfa8;
+    --fg:         #3f3f3f;
+    --fg-dim:     #6a6a6a;
+    --fg-mute:    #8a8876;
+
+    --kw:         #7c5ca3;
+    --ty:         #2f4a74;
+    --str:        #5f7d3a;
+    --num:        #a36b00;
+    --cmt:        #8a8876;
+    --punc:       #404040;
+    --mac:        #2f4a74;
+    --lt:         #a03b5b;
+
+    --accent:     #b8576f;
+    --selection:  rgba(184, 87, 111, 0.26);
+    --modeline:   #6fa199;
+    --modeline-fg:#1a1a1a;
+    --modeline-inactive:   #b7b3a0;
+    --modeline-inactive-fg:#5d5a4d;
+    --pane-focus: #b8576f;
+    --linenum:    #958c7a;
+
+    --overlay-bg:     #c9c5ae;
+    --overlay-border: #8a8876;
+    --overlay-sel:    #b1aa8e;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0 !important;
+    padding: 0;
+    user-select: none;
+}
+
+html, body, main, #main {
+    height: 100%;
+    width: 100%;
+    margin: 0 !important;
+    padding: 0 !important;
+    font-family: "Liberation Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+    line-height: 0;
+    font-size: 0;
+}
+
+#app-root {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+}
+
+#main-split {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+}
+
+#main-split.split-active #editor-panel {
+    width: 50%;
+    border-right: 2px solid var(--bg-hl);
+}
+
+#main-split.split-active #editor-panel.pane-active {
+    border-right-color: var(--pane-focus);
+}
+
+#main-split.split-single #editor-panel {
+    width: 100%;
+}
+
+/* ── Editor Panel ────────────────────────────────────────────────────── */
+
+#editor-panel {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+    font-size: 22px;
+    line-height: 34px;
+    position: relative;
+    background: var(--bg);
+}
+
+#editor-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--bg);
+    padding: 0;
+    margin: 0;
+    position: relative;
+    z-index: 1;
+    min-height: 0;
+}
+
+#editor-inner {
+    display: flex;
+    flex-direction: row;
+    min-height: 100%;
+    padding: 0;
+    margin: 0;
+}
+
+/* ── Line Number Gutter ──────────────────────────────────────────────── */
+
+#gutter {
+    min-width: 66px;
+    width: 66px;
+    flex-shrink: 0;
+    padding-top: 2px;
+    background: var(--bg-alt);
+    border-right: 1px solid var(--bg-hl);
+    text-align: right;
+}
+
+.line-num {
+    height: 34px;
+    line-height: 34px;
+    font-size: 18px;
+    color: var(--linenum);
+    padding-right: 8px;
+}
+
+/* ── Code Area ───────────────────────────────────────────────────────── */
+
+#code-area {
+    flex: 1;
+    position: relative;
+}
+
+#selection-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.selection-rect {
+    position: absolute;
+    height: 34px;
+    background: var(--selection);
+}
+
+.search-rect {
+    position: absolute;
+    height: 34px;
+    background: rgba(163, 107, 0, 0.28);
+    border: 1px solid rgba(163, 107, 0, 0.55);
+}
+
+.search-rect-current {
+    background: rgba(163, 107, 0, 0.55);
+    border-color: var(--num);
+}
+
+/* Ctrl-hover affordance: subtle underline on the word the user would
+   jump to on click. Lives in the same selection layer as search/selection
+   rects, so it sits behind text. */
+.ctrl-hover-rect {
+    position: absolute;
+    height: 34px;
+    border-bottom: 1.5px solid var(--kw);
+    pointer-events: none;
+}
+
+#measure-line {
+    position: absolute;
+    visibility: hidden;
+    pointer-events: none;
+    top: 0;
+    left: 0;
+    white-space: pre;
+    font-family: inherit;
+    font-size: 22px;
+    line-height: 34px;
+}
+
+#highlight-layer {
+    position: relative;
+    padding: 2px;
+    font-family: inherit;
+    font-size: 22px;
+    line-height: 34px;
+    user-select: none;
+    z-index: 2;
+}
+
+.code-line {
+    height: 34px;
+    line-height: 34px;
+    white-space: pre;
+    font-family: inherit;
+    font-size: 22px;
+}
+
+#cursor {
+    position: absolute;
+    width: 3px;
+    height: 32px;
+    background: var(--accent);
+}
+
+#cursor.blink {
+    animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
+#editor-panel:focus {
+    outline: none;
+}
+
+/* ── Status Bar ──────────────────────────────────────────────────────── */
+
+#status-bar {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 18px;
+    padding: 0 16px;
+    background: var(--modeline);
+    border-top: 1px solid var(--bg-hl);
+    font-size: 16px;
+    line-height: 28px;
+    color: var(--modeline-fg);
+    position: relative;
+    z-index: 20;
+    flex-shrink: 0;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+#status-bar.inactive {
+    background: var(--modeline-inactive);
+    color: var(--modeline-inactive-fg);
+}
+
+#status-bar.inactive .ml-flag,
+#status-bar.inactive .ml-pos,
+#status-bar.inactive .ml-lc,
+#status-bar.inactive .ml-mode,
+#status-bar.inactive .ml-proj,
+#status-bar.inactive .ml-lsp {
+    color: var(--modeline-inactive-fg);
+}
+
+#status-bar.inactive .ml-name {
+    color: var(--fg-dim);
+}
+
+.ml-flag { color: var(--modeline-fg); font-weight: bold; }
+.ml-name { color: #0b1a33; font-weight: bold; }
+.ml-pos  { color: var(--modeline-fg); }
+.ml-lc   { color: var(--modeline-fg); }
+.ml-mode { color: var(--modeline-fg); font-style: italic; }
+.ml-proj {
+    color: var(--modeline-fg);
+    margin-left: auto;
+    font-weight: bold;
+    overflow: hidden;
+    white-space: nowrap;
+    min-width: 0;
+}
+.ml-lsp  {
+    color: var(--modeline-fg);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* ── Syntax Colors ───────────────────────────────────────────────────── */
+
+.syn-plain  { color: var(--fg); }
+.syn-kw     { color: var(--kw); font-weight: bold; }
+.syn-ty     { color: var(--ty); }
+.syn-str    { color: var(--str); }
+.syn-cmt    { color: var(--cmt); font-style: italic; }
+.syn-num    { color: var(--num); }
+.syn-punc   { color: var(--punc); }
+.syn-mac    { color: var(--mac); }
+.syn-lt     { color: var(--lt); }
+.syn-md-heading { color: var(--kw); font-weight: bold; }
+.syn-md-code    { color: var(--str); }
+.syn-md-link    { color: var(--ty); text-decoration: underline; }
+.syn-md-em      { color: var(--lt); font-style: italic; }
+
+/* ── Right Panel (command output) ────────────────────────────────────── */
+
+#right-panel {
+    width: 50%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border-left: 2px solid var(--bg-hl);
+}
+
+#right-panel.pane-active {
+    border-left-color: var(--pane-focus);
+}
+
+#right-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 16px;
+    background: var(--modeline-inactive);
+    border-bottom: 1px solid var(--bg-hl);
+    font-size: 18px;
+    color: var(--modeline-inactive-fg);
+    font-weight: bold;
+    height: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    flex-shrink: 0;
+}
+
+#right-header.active {
+    background: var(--modeline);
+    color: var(--modeline-fg);
+}
+
+#right-header.active .right-title,
+#right-header.active .right-status {
+    color: var(--modeline-fg);
+}
+
+#right-header.inactive .right-title,
+#right-header.inactive .right-status {
+    color: var(--modeline-inactive-fg);
+}
+
+.right-title { color: var(--ty); }
+.right-status { color: var(--fg-mute); font-size: 15px; font-weight: normal; }
+
+#right-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: auto;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 20px;
+    line-height: 28px;
+    min-height: 0;
+    color: var(--fg);
+}
+
+.right-line {
+    white-space: pre;
+    height: 28px;
+    line-height: 28px;
+    font-size: 20px;
+    padding: 0 4px;
+}
+
+.rg-clickable { cursor: pointer; }
+.rg-clickable:hover { background: var(--bg-hl); }
+.rg-selected { background: var(--selection); }
+
+.rg-path   { color: var(--ty); text-decoration: underline; }
+.rg-lineno { color: var(--kw); }
+.rg-colon  { color: var(--lt); }
+.rg-text   { color: var(--fg); }
+
+/* ── Minibuffer ──────────────────────────────────────────────────────── */
+
+#minibuffer {
+    flex-shrink: 0;
+    background: var(--bg);
+    color: var(--fg);
+    padding: 4px 16px;
+    font-size: 18px;
+    line-height: 24px;
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    border-top: 1px solid var(--bg-hl);
+    white-space: pre;
+    overflow: hidden;
+}
+
+.mb-search-label { color: var(--kw); font-weight: bold; }
+.mb-search-query { color: var(--fg); }
+.mb-search-caret {
+    display: inline-block;
+    width: 2px;
+    height: 20px;
+    background: var(--accent);
+    margin-left: 2px;
+    animation: blink 1s step-end infinite;
+}
+
+/* ── Overlay ─────────────────────────────────────────────────────────── */
+
+.overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 8vh;
+    background: rgba(0, 0, 0, 0.24);
+    z-index: 100;
+    pointer-events: none;
+    font-size: 20px;
+    line-height: 28px;
+}
+
+.overlay-box {
+    pointer-events: auto;
+    background: var(--overlay-bg);
+    border: 2px solid var(--overlay-border);
+    width: 70%;
+    max-width: 900px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.overlay-box.narrow { width: 50%; }
+/* Match the `#editor-body` scroll pattern: the box is a flex column with
+   a fixed height + `overflow: hidden`, and the inner visual takes
+   `flex: 1; min-height: 0; overflow-y: auto`. Plain `max-height` on the
+   visual alone wasn't enough for Blitz to set up a scroll viewport, and
+   without `overflow: hidden` on a positioned ancestor the absolutely-
+   positioned tree nodes leaked out under the box. */
+.overlay-box.undo-tree-box {
+    width: 80%;
+    max-width: 1100px;
+    height: 70vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+.overlay-prompt {
+    padding: 8px 14px;
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--overlay-border);
+    font-size: 20px;
+    color: var(--fg);
+    white-space: pre;
+    height: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+}
+
+.overlay-label { color: var(--kw); font-weight: bold; }
+.overlay-query { color: var(--fg); }
+.overlay-caret {
+    display: inline-block;
+    width: 2px;
+    height: 24px;
+    background: var(--accent);
+    margin-left: 2px;
+    animation: blink 1s step-end infinite;
+}
+
+.overlay-list {
+    padding: 4px 0;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.overlay-item {
+    padding: 2px 14px;
+    height: 28px;
+    line-height: 28px;
+    white-space: pre;
+    color: var(--fg);
+    font-size: 18px;
+}
+
+.overlay-item.selected {
+    background: var(--overlay-sel);
+    color: var(--accent);
+    font-weight: bold;
+}
+
+.undo-tree-list {
+    font-family: "Liberation Mono", monospace;
+}
+
+/* `flex: 1` + `min-height: 0` inside the flex-column box mirrors how
+   `#editor-body` becomes a working scroll viewport in Blitz. The plain
+   `height` / `max-height` approach didn't actually enable wheel scrolling
+   for a non-flex container.
+   `position: relative` is the workaround for a Blitz paint-clip bug:
+   `overflow: hidden` on a non-positioned scroll viewport doesn't clip
+   absolutely-positioned descendants, so dots leaked out below the box
+   (reproducible in examples/abspos_overlay_scroll_repro.rs). */
+.undo-tree-visual {
+    padding: 18px 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+/* The canvas itself must occupy its computed height in normal flow so the
+   scroll container sees something to scroll past. Without `display: block`
+   + an inline `height` (set by the renderer) Blitz collapses around the
+   absolutely-positioned children and the viewport never overflows. */
+.undo-tree-canvas {
+    position: relative;
+    display: block;
+    margin: 0 auto !important;
+}
+
+.undo-tree-edge {
+    position: absolute;
+    height: 2px;
+    background: rgba(63, 63, 63, 0.36);
+    border-radius: 2px;
+    transform-origin: 0 50%;
+}
+
+.undo-tree-edge.active {
+    height: 3px;
+    background: rgba(184, 87, 111, 0.82);
+}
+
+.undo-tree-node {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--fg-mute);
+    background: var(--overlay-bg);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+}
+
+.undo-tree-node-core {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--fg-mute);
+    margin: 4px auto !important;
+}
+
+.undo-tree-node.current {
+    border-color: var(--accent);
+}
+
+.undo-tree-node.current .undo-tree-node-core {
+    background: var(--accent);
+}
+
+.undo-tree-node.selected {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 0 5px rgba(184, 87, 111, 0.18), 0 2px 8px rgba(0, 0, 0, 0.26);
+}
+
+.undo-tree-node.selected .undo-tree-node-core {
+    background: var(--bg);
+}
+
+.undo-tree-item {
+    font-size: 16px;
+}
+
+.overlay-empty {
+    padding: 8px 14px;
+    color: var(--fg-mute);
+    font-style: italic;
+    font-size: 18px;
+}
+
+.overlay-hint {
+    padding: 6px 14px;
+    color: var(--fg-mute);
+    font-size: 15px;
+    font-style: italic;
+    border-top: 1px solid var(--overlay-border);
+}
+
+/* ── Completion popup ───────────────────────────────────────────────── */
+
+.completion-popup {
+    position: absolute;
+    background: var(--overlay-bg);
+    border: 1.5px solid var(--overlay-border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+    z-index: 50;
+    min-width: 280px;
+    max-width: 640px;
+    max-height: 360px;
+    overflow: hidden;
+    font-size: 17px;
+    line-height: 26px;
+    padding: 4px 0;
+}
+
+.completion-item {
+    padding: 0 12px;
+    height: 26px;
+    line-height: 26px;
+    white-space: pre;
+    color: var(--fg);
+    font-size: 17px;
+    overflow: hidden;
+}
+
+.completion-item.completion-selected {
+    background: var(--overlay-sel);
+    color: var(--accent);
+    font-weight: bold;
+}
+
+.completion-label { color: var(--fg); }
+.completion-item.completion-selected .completion-label { color: var(--accent); }
+.completion-detail { color: var(--fg-mute); font-style: italic; }
+
+.completion-empty {
+    padding: 4px 12px;
+    color: var(--fg-mute);
+    font-style: italic;
+    font-size: 17px;
+}
