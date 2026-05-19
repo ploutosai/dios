@@ -83,6 +83,11 @@ pub struct BlitzView {
     /// 60+ events between frames).
     pending_pointer_move: bool,
 
+    /// UI events captured by miniquad callbacks. They are dispatched from
+    /// `update()` so platform event handlers only queue work and schedule the
+    /// frame that will process it.
+    pending_ui_events: Vec<UiEvent>,
+
     // Window state
     width: u32,
     height: u32,
@@ -157,6 +162,7 @@ impl BlitzView {
             pending_key_text: None,
             animation_start: Instant::now(),
             pending_pointer_move: false,
+            pending_ui_events: Vec::new(),
             width,
             height,
             needs_redraw: true,
@@ -200,16 +206,17 @@ impl BlitzView {
             }
         }
 
-        // Dispatch the coalesced pointer-move (at most one per frame) before
-        // polling the VDOM so Dioxus sees the updated position.
+        // Dispatch queued input at one per-frame point. Platform event
+        // callbacks only update lightweight state, queue UiEvents, and
+        // schedule this frame; DOM/Dioxus handling happens here.
         self.flush_pending_pointer_move();
+        self.dispatch_pending_ui_events();
 
-        // Single per-frame reconciliation point.  All event handlers
-        // (key_down, char_event, mouse_button_down/up, pointer-move, wheel)
-        // call handle_ui_event() to fire Dioxus signal mutations, but defer
-        // the expensive VDOM diff + DOM mutation to this single poll().
-        // This coalesces e.g. 14 held-key repeats into one reconciliation.
-        // `poll()` is a no-op when there is no pending work.
+        // Single per-frame reconciliation point. Input dispatch above may fire
+        // Dioxus signal mutations, but the expensive VDOM diff + DOM mutation
+        // is deferred to this single poll(). This coalesces e.g. 14 held-key
+        // repeats into one reconciliation. `poll()` is a no-op when there is no
+        // pending work.
         {
             puffin::profile_scope!("doc.poll (frame)");
             if self.poll_document_until_pending() {
@@ -266,12 +273,7 @@ impl BlitzView {
     /// This is useful for embedding Blitz inside a larger miniquad/macroquad
     /// scene: the document lays out in its own viewport size, then paints at
     /// the requested host-window coordinates.
-    pub fn draw_with_ctx_at(
-        &mut self,
-        ctx: &mut dyn miniquad::RenderingBackend,
-        x: u32,
-        y: u32,
-    ) {
+    pub fn draw_with_ctx_at(&mut self, ctx: &mut dyn miniquad::RenderingBackend, x: u32, y: u32) {
         puffin::profile_function!();
         let animation_time = self.animation_time();
 
@@ -302,6 +304,14 @@ impl BlitzView {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
+        self.resize_inner(width, height, true);
+    }
+
+    pub(crate) fn resize_without_scheduling(&mut self, width: u32, height: u32) {
+        self.resize_inner(width, height, false);
+    }
+
+    fn resize_inner(&mut self, width: u32, height: u32, schedule_update: bool) {
         self.width = width;
         self.height = height;
         self.renderer.set_size(width, height);
@@ -314,11 +324,12 @@ impl BlitzView {
         drop(inner);
 
         self.needs_redraw = true;
-        miniquad::window::schedule_update();
+        if schedule_update {
+            miniquad::window::schedule_update();
+        }
     }
 
     pub fn mouse_motion(&mut self, x: f32, y: f32) {
-        puffin::profile_function!();
         self.pointer_x = x;
         self.pointer_y = y;
 
@@ -327,9 +338,8 @@ impl BlitzView {
         // motion events while dragging/selecting, or while Ctrl/Meta-hover is
         // active for goto-definition affordances.  Wheel/click handlers still
         // use the latest pointer coordinates stored above.
-        let motion_can_change_ui = self.buttons != MouseEventButtons::None
-            || self.modifiers.ctrl
-            || self.modifiers.logo;
+        let motion_can_change_ui =
+            self.buttons != MouseEventButtons::None || self.modifiers.ctrl || self.modifiers.logo;
         self.pending_pointer_move = motion_can_change_ui;
         if motion_can_change_ui {
             miniquad::window::schedule_update();
@@ -337,7 +347,6 @@ impl BlitzView {
     }
 
     pub fn mouse_wheel(&mut self, x: f32, y: f32) {
-        puffin::profile_function!();
         // miniquad reports wheel deltas in coarse "notches" on mice and
         // fractional values on touchpads. Convert to pixels here so the DOM
         // scroller can preserve fractional/smooth deltas instead of snapping
@@ -349,13 +358,12 @@ impl BlitzView {
             buttons: self.buttons,
             mods: mq_mods_to_kbt(self.modifiers),
         });
-        self.doc.handle_ui_event(event);
+        self.pending_ui_events.push(event);
         self.needs_redraw = true;
         miniquad::window::schedule_update();
     }
 
     pub fn mouse_button_down(&mut self, button: MouseButton, x: f32, y: f32) {
-        puffin::profile_function!();
         self.pointer_x = x;
         self.pointer_y = y;
         // Flush any pending motion so the pointer-move precedes the click.
@@ -372,17 +380,13 @@ impl BlitzView {
             mods: mq_mods_to_kbt(self.modifiers),
             details: PointerDetails::default(),
         });
-        {
-            puffin::profile_scope!("doc.handle_ui_event(PointerDown)");
-            self.doc.handle_ui_event(event);
-        }
+        self.pending_ui_events.push(event);
         // poll() deferred to update() — coalesced with other events in this frame.
         self.needs_redraw = true;
         miniquad::window::schedule_update();
     }
 
     pub fn mouse_button_up(&mut self, button: MouseButton, x: f32, y: f32) {
-        puffin::profile_function!();
         self.pointer_x = x;
         self.pointer_y = y;
         // Flush any pending motion so the pointer-move precedes the release.
@@ -399,25 +403,18 @@ impl BlitzView {
             mods: mq_mods_to_kbt(self.modifiers),
             details: PointerDetails::default(),
         });
-        {
-            puffin::profile_scope!("doc.handle_ui_event(PointerUp)");
-            self.doc.handle_ui_event(event);
-        }
+        self.pending_ui_events.push(event);
         // poll() deferred to update() — coalesced with other events in this frame.
         self.needs_redraw = true;
         miniquad::window::schedule_update();
     }
 
     pub fn key_down(&mut self, keycode: KeyCode, keymods: KeyMods, repeat: bool) {
-        puffin::profile_function!();
         let keymods = correct_self_modifier(keycode, keymods, true);
         self.modifiers = keymods;
         let key_text = self.pending_key_text.take();
         let key_event = create_key_event(keycode, keymods, KeyState::Pressed, repeat, key_text);
-        {
-            puffin::profile_scope!("doc.handle_ui_event(KeyDown)");
-            self.doc.handle_ui_event(UiEvent::KeyDown(key_event));
-        }
+        self.pending_ui_events.push(UiEvent::KeyDown(key_event));
         // poll() deferred to update() — multiple key events per frame are
         // coalesced into a single VDOM reconciliation pass.
         self.needs_redraw = true;
@@ -425,16 +422,14 @@ impl BlitzView {
     }
 
     pub fn key_up(&mut self, keycode: KeyCode, keymods: KeyMods) {
-        puffin::profile_function!();
         let keymods = correct_self_modifier(keycode, keymods, false);
         self.modifiers = keymods;
         let key_event = create_key_event(keycode, keymods, KeyState::Released, false, None);
-        self.doc.handle_ui_event(UiEvent::KeyUp(key_event));
+        self.pending_ui_events.push(UiEvent::KeyUp(key_event));
         miniquad::window::schedule_update();
     }
 
     pub fn char_event(&mut self, character: char, keymods: KeyMods) {
-        puffin::profile_function!();
         self.modifiers = keymods;
 
         // Filter out events that aren't real text input. miniquad's
@@ -462,14 +457,23 @@ impl BlitzView {
         let event = UiEvent::Ime(blitz_traits::events::BlitzImeEvent::Commit(
             character.to_string(),
         ));
-        {
-            puffin::profile_scope!("doc.handle_ui_event(Ime)");
-            self.doc.handle_ui_event(event);
-        }
+        self.pending_ui_events.push(event);
         // poll() deferred to update() — multiple char events per frame are
         // coalesced into a single VDOM reconciliation pass.
         self.needs_redraw = true;
         miniquad::window::schedule_update();
+    }
+
+    fn dispatch_pending_ui_events(&mut self) {
+        if self.pending_ui_events.is_empty() {
+            return;
+        }
+
+        puffin::profile_scope!("doc.handle_ui_events");
+        let events = std::mem::take(&mut self.pending_ui_events);
+        for event in events {
+            self.doc.handle_ui_event(event);
+        }
     }
 
     /// Dispatch the coalesced pointer-move event if one is pending.
@@ -483,7 +487,6 @@ impl BlitzView {
         }
         self.pending_pointer_move = false;
 
-        puffin::profile_scope!("flush_pending_pointer_move");
         let event = UiEvent::PointerMove(BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
@@ -493,10 +496,7 @@ impl BlitzView {
             mods: mq_mods_to_kbt(self.modifiers),
             details: PointerDetails::default(),
         });
-        {
-            puffin::profile_scope!("doc.handle_ui_event(PointerMove)");
-            self.doc.handle_ui_event(event);
-        }
+        self.pending_ui_events.push(event);
         // Do not unconditionally mark the frame dirty.  PointerMove is often
         // just a new mouse position; DOM hover changes request redraw via the
         // shell provider, and Dioxus signal mutations are picked up by the

@@ -1,21 +1,5 @@
-use macroquad::prelude::*;
 use dios::embedded::macroquad::Editor;
-
-fn checker_texture(w: usize, h: usize) -> Texture2D {
-    let mut image = Image::gen_image_color(w as u16, h as u16, WHITE);
-    let data = image.get_image_data_mut();
-    for y in 0..h {
-        for x in 0..w {
-            let checker = ((x / 32) + (y / 32)) % 2 == 0;
-            data[x + y * w] = if checker {
-                Color::new(1.0, 0.42, 0.25, 1.0).into()
-            } else {
-                Color::new(0.1, 0.12, 0.18, 1.0).into()
-            };
-        }
-    }
-    Texture2D::from_image(&image)
-}
+use macroquad::prelude::*;
 
 fn build_material(
     fragment_shader: &str,
@@ -54,7 +38,7 @@ fn window_conf() -> Conf {
 async fn main() {
     let mut editor = Editor::new("fragment.glsl", DEFAULT_FRAGMENT_SHADER);
 
-    let checker = checker_texture(256, 256);
+    let ferris = load_texture("examples/ferris.png").await.unwrap();
     let pipeline_params = PipelineParams {
         depth_write: true,
         depth_test: Comparison::LessOrEqual,
@@ -85,11 +69,9 @@ async fn main() {
         let scene_h = screen_height() as i32;
         let t = get_time() as f32;
         let camera = Camera3D {
-            position: vec3(-15.0 + t.sin() * 2.0, 15.0, -5.0),
+            position: vec3(-15.0 + t.sin() * 2.0, 15.0,-5.0),
             up: vec3(0.0, 1.0, 0.0),
             target: vec3(0.0, 5.0, -5.0),
-            aspect: Some(scene_w as f32 / scene_h.max(1) as f32),
-            viewport: Some((scene_x, 0, scene_w, scene_h)),
             ..Default::default()
         };
 
@@ -101,7 +83,7 @@ async fn main() {
             Color::new(0.65, 0.65, 0.75, 0.75),
         );
         gl_use_material(&material);
-        draw_sphere(vec3(0.0, 6.0, 0.0), 5.0, Some(&checker), WHITE);
+        draw_sphere(vec3(0.0, 6.0, 0.0), 5.0, Some(&ferris), WHITE);
         gl_use_default_material();
 
         set_default_camera();
@@ -132,7 +114,7 @@ async fn main() {
             );
         }
 
-        editor.draw();
+        editor.draw(100.0, 100.0, screen_width() * 0.48, screen_height() - 200.0);
         next_frame().await;
     }
 }

@@ -85,4 +85,5 @@ path = "examples/lsp_smoke.rs"
 # Also applies transitively to the crates.io macroquad dependency.
 miniquad = { path = "deps/miniquad" }
 subsecond = { path = "deps/subsecond" }
+puffin = { path = "deps/puffin" }
 web-time = { path = "deps/web-time" }
