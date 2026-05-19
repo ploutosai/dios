@@ -1653,7 +1653,11 @@ impl RenderingBackend for GlContext {
         }
     }
 
-    fn begin_pass(
+    fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
+        self.begin_pass_ext(pass, None, None, action);
+    }
+
+    fn begin_pass_ext(
         &mut self,
         pass: Option<RenderPass>,
         viewport: Option<(i32, i32, i32, i32)>,

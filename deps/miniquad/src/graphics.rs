@@ -1416,16 +1416,33 @@ pub trait RenderingBackend {
     );
 
     fn begin_default_pass(&mut self, action: PassAction) {
-        self.begin_pass(None, None, None, action);
+        self.begin_pass(None, action);
     }
 
-    fn begin_pass(
+    /// Begin rendering into `pass`.
+    ///
+    /// Keep the crates.io miniquad 0.4 API shape here so crates that depend on
+    /// it (notably crates.io macroquad) continue to compile when this patched
+    /// miniquad is supplied through `[patch.crates-io]`.
+    fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction);
+
+    /// Patched extension used by experiments that need to atomically set the
+    /// pass viewport/scissor before the pass action is applied.
+    fn begin_pass_ext(
         &mut self,
         pass: Option<RenderPass>,
         viewport: Option<(i32, i32, i32, i32)>,
         scissor: Option<(i32, i32, i32, i32)>,
         action: PassAction,
-    );
+    ) {
+        self.begin_pass(pass, action);
+        if let Some((x, y, w, h)) = viewport {
+            self.apply_viewport(x, y, w, h);
+        }
+        if let Some((x, y, w, h)) = scissor {
+            self.apply_scissor_rect(x, y, w, h);
+        }
+    }
 
     fn end_render_pass(&mut self);
 

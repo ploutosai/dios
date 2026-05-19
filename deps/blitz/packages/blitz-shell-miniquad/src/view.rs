@@ -258,6 +258,20 @@ impl BlitzView {
     /// Does not clear the screen or commit the frame.
     /// Pass macroquad's context via `unsafe { get_internal_gl().quad_context }`.
     pub fn draw_with_ctx(&mut self, ctx: &mut dyn miniquad::RenderingBackend) {
+        self.draw_with_ctx_at(ctx, 0, 0);
+    }
+
+    /// Render the view into a shared backend, offset by `x`/`y` logical pixels.
+    ///
+    /// This is useful for embedding Blitz inside a larger miniquad/macroquad
+    /// scene: the document lays out in its own viewport size, then paints at
+    /// the requested host-window coordinates.
+    pub fn draw_with_ctx_at(
+        &mut self,
+        ctx: &mut dyn miniquad::RenderingBackend,
+        x: u32,
+        y: u32,
+    ) {
         puffin::profile_function!();
         let animation_time = self.animation_time();
 
@@ -274,7 +288,7 @@ impl BlitzView {
             puffin::profile_scope!("blitz: renderer.render_with_ctx");
             self.renderer.render_with_ctx(ctx, |scene| {
                 puffin::profile_scope!("blitz: paint_scene");
-                paint_scene(scene, &inner, scale, width, height, 0, 0);
+                paint_scene(scene, &inner, scale, width, height, x, y);
             });
         }
 

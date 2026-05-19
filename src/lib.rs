@@ -3,6 +3,7 @@ pub mod buffer;
 pub mod clipboard;
 pub mod commands;
 pub mod editor;
+pub mod embedded;
 pub mod files;
 pub mod isearch;
 pub mod lsp;

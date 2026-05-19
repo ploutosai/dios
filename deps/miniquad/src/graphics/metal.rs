@@ -527,8 +527,6 @@ impl RenderingBackend for MetalContext {
         // TODO: begin_pass/end_pass works, but is far from optimal
         self.begin_pass(
             None,
-            None,
-            None,
             PassAction::Clear {
                 color,
                 depth,
@@ -1153,13 +1151,7 @@ impl RenderingBackend for MetalContext {
         self.current_ub_offset = roundup_ub_buffer(self.current_ub_offset + size as u64);
     }
 
-    fn begin_pass(
-        &mut self,
-        pass: Option<RenderPass>,
-        _viewport: Option<(i32, i32, i32, i32)>,
-        _scissor: Option<(i32, i32, i32, i32)>,
-        action: PassAction,
-    ) {
+    fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
         unsafe {
             if self.command_buffer.is_none() {
                 self.command_buffer = Some(msg_send![self.command_queue, commandBuffer]);
