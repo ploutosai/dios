@@ -422,15 +422,6 @@ impl Default for TextureParams {
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub struct ShaderId(usize);
 
-impl ShaderId {
-    pub fn into_raw(self) -> usize {
-        self.0
-    }
-    pub unsafe fn from_raw(raw: usize) -> Self {
-        ShaderId(raw)
-    }
-}
-
 // Inner hence we can't have private data in enum fields
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TextureIdInner {
@@ -447,15 +438,6 @@ impl TextureId {
     /// manage the texture.
     pub fn from_raw_id(raw_id: RawId) -> TextureId {
         TextureId(TextureIdInner::Raw(raw_id))
-    }
-
-    /// Get the raw handle value for FFI purposes.
-    /// Returns Some(handle) for managed textures, None for raw textures.
-    pub fn into_raw(self) -> Option<usize> {
-        match self.0 {
-            TextureIdInner::Managed(id) => Some(id),
-            TextureIdInner::Raw(_) => None,
-        }
     }
 }
 
@@ -586,21 +568,6 @@ impl Default for PassAction {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderPass(usize);
-
-impl RenderPass {
-    /// Get the raw handle value for FFI purposes.
-    pub fn into_raw(self) -> usize {
-        self.0
-    }
-
-    /// Create a RenderPass from a raw handle value.
-    ///
-    /// # Safety
-    /// The caller must ensure the handle is valid.
-    pub unsafe fn from_raw(handle: usize) -> Self {
-        RenderPass(handle)
-    }
-}
 
 pub const MAX_VERTEX_ATTRIBUTES: usize = 16;
 pub const MAX_SHADERSTAGE_IMAGES: usize = 12;
@@ -773,15 +740,6 @@ pub struct PipelineParams {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Pipeline(usize);
 
-impl Pipeline {
-    pub fn into_raw(self) -> usize {
-        self.0
-    }
-    pub unsafe fn from_raw(raw: usize) -> Self {
-        Pipeline(raw)
-    }
-}
-
 impl Default for PipelineParams {
     fn default() -> PipelineParams {
         PipelineParams {
@@ -849,15 +807,6 @@ fn gl_usage(usage: &BufferUsage) -> GLenum {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct BufferId(usize);
 
-impl BufferId {
-    pub fn into_raw(self) -> usize {
-        self.0
-    }
-    pub unsafe fn from_raw(raw: usize) -> Self {
-        BufferId(raw)
-    }
-}
-
 /// `ElapsedQuery` is used to measure duration of GPU operations.
 ///
 /// Usual timing/profiling methods are difficult apply to GPU workloads as draw calls are submitted
@@ -892,10 +841,10 @@ impl BufferId {
 /// # let mut query = ElapsedQuery::new();
 /// # query.begin_query();
 /// # query.end_query();
-/// # if query.is_available() {
-/// #   let duration_nanoseconds = query.get_result();
-/// #   // use/display duration_nanoseconds
-/// # }
+/// if query.is_available() {
+///   let duration_nanoseconds = query.get_result();
+///   // use/display duration_nanoseconds
+/// }
 /// ```
 ///
 /// And during finalization:
@@ -1027,18 +976,6 @@ pub struct Arg<'a> {
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Arg<'a> {
-    pub fn as_ptr(&self) -> *const u8 {
-        self.ptr as *const u8
-    }
-    pub fn size(&self) -> usize {
-        self.size
-    }
-    pub fn element_size(&self) -> usize {
-        self.element_size
-    }
-}
-
 pub enum TextureSource<'a> {
     Empty,
     Bytes(&'a [u8]),
@@ -1161,7 +1098,6 @@ impl ContextInfo {
 }
 
 pub trait RenderingBackend {
-    fn reset_cache(&mut self) {}
     fn info(&self) -> ContextInfo;
     /// For metal context's ShaderSource should contain MSL source string, for GL - glsl.
     ///
@@ -1207,9 +1143,6 @@ pub trait RenderingBackend {
         params: TextureParams,
     ) -> TextureId {
         self.new_texture(TextureAccess::Static, TextureSource::Bytes(bytes), params)
-    }
-    fn new_texture_from_raw(&mut self, _texture_id: RawId, _params: TextureParams) -> TextureId {
-        unimplemented!()
     }
     fn new_texture_from_rgba8(&mut self, width: u16, height: u16, bytes: &[u8]) -> TextureId {
         assert_eq!(width as usize * height as usize * 4, bytes.len());
@@ -1414,35 +1347,10 @@ pub trait RenderingBackend {
         depth: Option<f32>,
         stencil: Option<i32>,
     );
-
-    fn begin_default_pass(&mut self, action: PassAction) {
-        self.begin_pass(None, action);
-    }
-
-    /// Begin rendering into `pass`.
-    ///
-    /// Keep the crates.io miniquad 0.4 API shape here so crates that depend on
-    /// it (notably crates.io macroquad) continue to compile when this patched
-    /// miniquad is supplied through `[patch.crates-io]`.
+    /// start rendering to the default frame buffer
+    fn begin_default_pass(&mut self, action: PassAction);
+    /// start rendering to an offscreen framebuffer
     fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction);
-
-    /// Patched extension used by experiments that need to atomically set the
-    /// pass viewport/scissor before the pass action is applied.
-    fn begin_pass_ext(
-        &mut self,
-        pass: Option<RenderPass>,
-        viewport: Option<(i32, i32, i32, i32)>,
-        scissor: Option<(i32, i32, i32, i32)>,
-        action: PassAction,
-    ) {
-        self.begin_pass(pass, action);
-        if let Some((x, y, w, h)) = viewport {
-            self.apply_viewport(x, y, w, h);
-        }
-        if let Some((x, y, w, h)) = scissor {
-            self.apply_scissor_rect(x, y, w, h);
-        }
-    }
 
     fn end_render_pass(&mut self);
 

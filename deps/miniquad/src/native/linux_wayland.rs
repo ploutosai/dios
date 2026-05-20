@@ -122,7 +122,7 @@ impl WaylandPayload {
                 for _ in 0..count[0] {
                     self.keyboard_context.generate_key_repeat_events(
                         &mut self.xkb,
-                        self.keymap.xkb_keymap,
+                        &self.keymap,
                         self.xkb_state,
                         &mut self.events,
                     );
@@ -141,7 +141,7 @@ impl WaylandPayload {
         // the message string is not accessible to us.
         match errno {
             0 => (),
-            EPROTO => {
+            libc::EPROTO => {
                 let mut interface: *const wl_interface = std::ptr::null();
                 let mut id = 0;
                 let code = (self.client.wl_display_get_protocol_error)(
@@ -239,7 +239,6 @@ struct KeyboardContext {
     /// This is the actual key being sent by Wayland, not `keysym` or Miniquad `Keycode`
     repeated_key: Option<core::ffi::c_uint>,
     timerfd: core::ffi::c_int,
-    keymods: KeyMods,
 }
 
 fn new_itimerspec() -> libc::itimerspec {
@@ -262,7 +261,6 @@ impl KeyboardContext {
             repeat_info: Default::default(),
             repeated_key: None,
             timerfd: unsafe { libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC) },
-            keymods: Default::default(),
         }
     }
     fn track_key_down(&mut self, key: core::ffi::c_uint) {
@@ -292,34 +290,36 @@ impl KeyboardContext {
     unsafe fn generate_key_repeat_events(
         &self,
         libxkb: &mut LibXkbCommon,
-        xkb_keymap: *mut xkb_keymap,
+        keymap: &XkbKeymap,
         xkb_state: *mut xkb_state,
         events: &mut Vec<WaylandEvent>,
     ) {
         if let Some(key) = self.repeated_key {
-            self.generate_key_events(libxkb, xkb_keymap, xkb_state, key, true, events)
+            self.generate_key_events(libxkb, keymap, xkb_state, key, true, events)
         }
     }
     unsafe fn generate_key_events(
         &self,
         libxkb: &mut LibXkbCommon,
-        xkb_keymap: *mut xkb_keymap,
+        keymap: &XkbKeymap,
         xkb_state: *mut xkb_state,
         key: core::ffi::c_uint,
         repeat: bool,
         events: &mut Vec<WaylandEvent>,
     ) {
+        let keymods = keymap.get_keymods(libxkb, xkb_state);
+
         // The keycodes in Miniquad are obtained without modifiers
-        let keysym = libxkb.keymap_key_get_sym_without_mod(xkb_keymap, key + 8);
+        let keysym = libxkb.keymap_key_get_sym_without_mod(keymap.xkb_keymap, key + 8);
         let keycode = keycodes::translate_keysym(keysym);
-        events.push(WaylandEvent::KeyDown(keycode, self.keymods, repeat));
+        events.push(WaylandEvent::KeyDown(keycode, keymods, repeat));
 
         // To obtain the underlying character, we do need to provide the modifiers
         let keysym = (libxkb.xkb_state_key_get_one_sym)(xkb_state, key + 8);
         let chr = (libxkb.xkb_keysym_to_utf32)(keysym);
         if chr > 0 {
             if let Some(chr) = char::from_u32(chr) {
-                events.push(WaylandEvent::Char(chr, self.keymods, repeat));
+                events.push(WaylandEvent::Char(chr, keymods, repeat));
             }
         }
     }
@@ -609,7 +609,6 @@ unsafe extern "C" fn keyboard_handle_leave(
     // Clear modifiers
     let display: &mut WaylandPayload = &mut *(data as *mut _);
     (display.xkb.xkb_state_update_mask)(display.xkb_state, 0, 0, 0, 0, 0, 0);
-    display.keyboard_context.keymods = KeyMods::default();
     display.keyboard_context.repeated_key = None;
     display.keyboard_context.enter_serial = None;
     display.events.push(WaylandEvent::WindowMinimized);
@@ -631,7 +630,6 @@ unsafe extern "C" fn keyboard_handle_key(
     let keysym = libxkb.keymap_key_get_sym_without_mod(xkb_keymap, key + 8);
     let keycode = keycodes::translate_keysym(keysym);
     let keymods = display.keymap.get_keymods(libxkb, xkb_state);
-    display.keyboard_context.keymods = keymods;
     match state {
         0 => {
             display.keyboard_context.track_key_up(key);
@@ -645,7 +643,7 @@ unsafe extern "C" fn keyboard_handle_key(
             }
             display.keyboard_context.generate_key_events(
                 libxkb,
-                xkb_keymap,
+                &display.keymap,
                 xkb_state,
                 key,
                 repeat,
@@ -1196,8 +1194,7 @@ where
             (libegl.eglGetProcAddress)(name.as_ptr() as _)
         });
 
-        display.decorations =
-            decorations::Decorations::new(&mut display, conf.platform.wayland_decorations);
+        display.decorations = decorations::Decorations::new(&mut display, conf);
         assert!(!display.xdg_toplevel.is_null());
 
         display.decorations.set_title(
@@ -1214,6 +1211,21 @@ where
             wm_class.as_ptr()
         );
 
+        if !conf.window_resizable {
+            for set_size in [
+                extensions::xdg_shell::xdg_toplevel::set_max_size,
+                extensions::xdg_shell::xdg_toplevel::set_min_size,
+            ] {
+                wl_request!(
+                    display.client,
+                    display.xdg_toplevel,
+                    set_size,
+                    conf.window_width,
+                    conf.window_height
+                );
+            }
+        }
+
         if conf.fullscreen {
             display.set_fullscreen(true);
         }
@@ -1224,6 +1236,10 @@ where
 
         let mut event_handler = (f.take().unwrap())();
 
+        // track cursor visibility and icon separately, so that we can show/hide cursor without resetting icon
+        let mut cursor_icon = crate::CursorIcon::Default;
+        let mut cursor_visible = true;
+
         while !crate::native_display().try_lock().unwrap().quit_ordered {
             while let Ok(request) = rx.try_recv() {
                 match request {
@@ -1232,19 +1248,20 @@ where
                     }
                     Request::ScheduleUpdate => display.update_requested = true,
                     Request::SetMouseCursor(icon) => {
+                        cursor_icon = icon;
                         display
                             .pointer_context
-                            .set_cursor(&mut display.client, Some(icon));
+                            .set_cursor(&mut display.client, cursor_visible.then_some(cursor_icon));
                     }
                     Request::SetCursorGrab(grab) => {
                         let payload = &mut display as *mut _ as _;
                         display.pointer_context.set_grab(payload, grab);
                     }
                     Request::ShowMouse(show) => {
-                        display.pointer_context.set_cursor(
-                            &mut display.client,
-                            show.then_some(crate::CursorIcon::Default),
-                        );
+                        cursor_visible = show;
+                        display
+                            .pointer_context
+                            .set_cursor(&mut display.client, cursor_visible.then_some(cursor_icon));
                     }
                     // TODO: implement the other events
                     _ => (),
@@ -1304,32 +1321,6 @@ where
                         drop(d);
                         event_handler.files_dropped_event();
                     }
-                }
-            }
-
-            while let Ok(request) = rx.try_recv() {
-                match request {
-                    Request::SetFullscreen(full) => {
-                        display.set_fullscreen(full);
-                    }
-                    Request::ScheduleUpdate => display.update_requested = true,
-                    Request::SetMouseCursor(icon) => {
-                        display
-                            .pointer_context
-                            .set_cursor(&mut display.client, Some(icon));
-                    }
-                    Request::SetCursorGrab(grab) => {
-                        let payload = &mut display as *mut _ as _;
-                        display.pointer_context.set_grab(payload, grab);
-                    }
-                    Request::ShowMouse(show) => {
-                        display.pointer_context.set_cursor(
-                            &mut display.client,
-                            show.then_some(crate::CursorIcon::Default),
-                        );
-                    }
-                    // TODO: implement the other events
-                    _ => (),
                 }
             }
 

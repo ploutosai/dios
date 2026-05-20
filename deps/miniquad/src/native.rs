@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+#[cfg(not(target_os = "android"))]
 use std::sync::mpsc;
 
 #[derive(Default)]
@@ -15,12 +16,14 @@ pub(crate) struct NativeDisplayData {
     pub high_dpi: bool,
     pub quit_requested: bool,
     pub quit_ordered: bool,
+    #[cfg(target_os = "android")]
+    pub native_requests: Box<dyn Fn(Request) + Send>,
+    #[cfg(not(target_os = "android"))]
     pub native_requests: mpsc::Sender<Request>,
     pub wake_event_loop: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     pub clipboard: Box<dyn Clipboard>,
     pub dropped_files: DroppedFiles,
     pub blocking_event_loop: bool,
-    pub crate_b: bool,
 
     #[cfg(target_vendor = "apple")]
     pub view: crate::native::apple::frameworks::ObjcId,
@@ -38,7 +41,8 @@ impl NativeDisplayData {
     pub fn new(
         screen_width: i32,
         screen_height: i32,
-        native_requests: mpsc::Sender<Request>,
+        #[cfg(target_os = "android")] native_requests: Box<dyn Fn(Request) + Send>,
+        #[cfg(not(target_os = "android"))] native_requests: mpsc::Sender<Request>,
         clipboard: Box<dyn Clipboard>,
     ) -> NativeDisplayData {
         NativeDisplayData {
@@ -54,7 +58,6 @@ impl NativeDisplayData {
             clipboard,
             dropped_files: Default::default(),
             blocking_event_loop: false,
-            crate_b: false,
             #[cfg(target_vendor = "apple")]
             gfx_api: crate::conf::AppleGfxApi::OpenGl,
             #[cfg(target_vendor = "apple")]
@@ -75,6 +78,8 @@ pub(crate) enum Request {
     SetWindowPosition { new_x: u32, new_y: u32 },
     SetFullscreen(bool),
     ShowKeyboard(bool),
+    SetImePosition { x: i32, y: i32 },
+    SetImeEnabled(bool),
 }
 
 #[cfg(target_os = "linux")]

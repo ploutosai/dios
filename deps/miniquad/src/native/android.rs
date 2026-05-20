@@ -6,7 +6,7 @@ use crate::{
     },
 };
 
-use std::{cell::RefCell, sync::mpsc, thread};
+use std::{cell::RefCell, sync::mpsc, thread, time::Duration};
 
 pub use crate::native::gl::{self, *};
 
@@ -43,7 +43,6 @@ extern "C" {
 #[derive(Debug)]
 enum Message {
     SurfaceChanged {
-        window: *mut ndk_sys::ANativeWindow,
         width: i32,
         height: i32,
     },
@@ -69,6 +68,7 @@ enum Message {
     Pause,
     Resume,
     Destroy,
+    Request(crate::native::Request),
 }
 unsafe impl Send for Message {}
 
@@ -188,15 +188,7 @@ impl MainThreadState {
             Message::SurfaceDestroyed => unsafe {
                 self.destroy_surface();
             },
-            Message::SurfaceChanged {
-                window,
-                width,
-                height,
-            } => {
-                unsafe {
-                    self.update_surface(window);
-                }
-
+            Message::SurfaceChanged { width, height } => {
                 {
                     let mut d = crate::native_display().lock().unwrap();
                     d.screen_width = width as _;
@@ -252,7 +244,9 @@ impl MainThreadState {
             }
             Message::Destroy => {
                 self.quit = true;
+                self.event_handler.quit_requested_event()
             }
+            Message::Request(req) => self.process_request(req),
         }
     }
 
@@ -287,6 +281,12 @@ impl MainThreadState {
                 let env = attach_jni_env();
                 ndk_utils::call_void_method!(env, ACTIVITY, "showKeyboard", "(Z)V", show as i32);
             },
+            SetImePosition { .. } => {
+                // IME position control not applicable on Android
+            }
+            SetImeEnabled(..) => {
+                // IME enable/disable not applicable on Android
+            }
             _ => {}
         }
     }
@@ -344,7 +344,7 @@ impl crate::native::Clipboard for AndroidClipboard {
                 return None;
             }
 
-            let text = ndk_utils::get_utf_str!(env, text).to_string();
+            let text = ndk_utils::get_utf_str!(env, text);
             Some(text)
         }
     }
@@ -372,7 +372,7 @@ pub unsafe fn run<F>(conf: crate::conf::Conf, f: F)
 where
     F: 'static + FnOnce() -> Box<dyn EventHandler>,
 {
-    {
+    if conf.platform.android_panic_hook {
         use std::ffi::CString;
         use std::panic;
 
@@ -398,7 +398,8 @@ where
 
     let (tx, rx) = mpsc::channel();
 
-    MESSAGES_TX.with(move |messages_tx| *messages_tx.borrow_mut() = Some(tx));
+    let tx2 = tx.clone();
+    MESSAGES_TX.with(move |messages_tx| *messages_tx.borrow_mut() = Some(tx2));
 
     thread::spawn(move || {
         let mut libegl = LibEgl::try_load().expect("Cant load LibEGL");
@@ -407,14 +408,18 @@ where
         //
         // sometimes before launching an app android will show a permission dialog
         // it is important to create GL context only after a first SurfaceChanged
-        let (window, screen_width, screen_height) = 'a: loop {
+        let window = 'a: loop {
             match rx.try_recv() {
-                Ok(Message::SurfaceChanged {
-                    window,
-                    width,
-                    height,
-                }) => {
-                    break 'a (window, width as f32, height as f32);
+                Ok(Message::SurfaceCreated { window }) => {
+                    break 'a window;
+                }
+                _ => {}
+            }
+        };
+        let (screen_width, screen_height) = 'a: loop {
+            match rx.try_recv() {
+                Ok(Message::SurfaceChanged { width, height }) => {
+                    break 'a (width as f32, height as f32);
                 }
                 _ => {}
             }
@@ -447,12 +452,12 @@ where
             panic!();
         }
 
-        let (tx, requests_rx) = std::sync::mpsc::channel();
         let clipboard = Box::new(AndroidClipboard::new());
-        crate::set_display(NativeDisplayData {
+        let tx_fn = Box::new(move |req| tx.send(Message::Request(req)).unwrap());
+        crate::set_or_replace_display(NativeDisplayData {
             high_dpi: conf.high_dpi,
             blocking_event_loop: conf.platform.blocking_event_loop,
-            ..NativeDisplayData::new(screen_width as _, screen_height as _, tx, clipboard)
+            ..NativeDisplayData::new(screen_width as _, screen_height as _, tx_fn, clipboard)
         });
 
         let event_handler = f.0();
@@ -475,18 +480,23 @@ where
             },
         };
 
-        while !s.quit {
-            while let Ok(request) = requests_rx.try_recv() {
-                s.process_request(request);
-            }
+        let rx_timeout = conf
+            .platform
+            .sleep_interval_ms
+            .map(|sleep| Duration::from_millis(sleep as u64));
 
+        while !s.quit {
             let block_on_wait = conf.platform.blocking_event_loop && !s.update_requested;
 
             if block_on_wait {
-                let res = rx.recv();
+                // We don't need to loop here because the loop above consumes all
+                // available messages. Instead we are going to block until receiving here.
 
-                if let Ok(msg) = res {
-                    s.process_message(msg);
+                match rx_recv(&rx, rx_timeout) {
+                    Ok(msg) => s.process_message(msg),
+                    // Timeout so time to do periodic update()
+                    Err(mpsc::RecvTimeoutError::Timeout) => s.update_requested = true,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => panic!(),
                 }
             } else {
                 // process all the messages from the main thread
@@ -512,6 +522,19 @@ where
         (s.libegl.eglDestroyContext)(s.egl_display, s.egl_context);
         (s.libegl.eglTerminate)(s.egl_display);
     });
+}
+
+/// Adds a call to Receiver as if there was a `.recv_timeout_opt(timeout)`
+/// where the `timeout` arg is optional.
+fn rx_recv<T>(
+    rx: &mpsc::Receiver<T>,
+    timeout: Option<Duration>,
+) -> Result<T, mpsc::RecvTimeoutError> {
+    match timeout {
+        Some(timeout) => rx.recv_timeout(timeout),
+        // No timeout specified so just do a normal blocking recv()
+        None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+    }
 }
 
 #[no_mangle]
@@ -584,14 +607,11 @@ extern "C" fn Java_quad_1native_QuadNative_surfaceOnSurfaceDestroyed(
 extern "C" fn Java_quad_1native_QuadNative_surfaceOnSurfaceChanged(
     _: *mut ndk_sys::JNIEnv,
     _: ndk_sys::jobject,
-    surface: ndk_sys::jobject,
+    _: ndk_sys::jobject,
     width: ndk_sys::jint,
     height: ndk_sys::jint,
 ) {
-    let window = unsafe { create_native_window(surface) };
-
     send_message(Message::SurfaceChanged {
-        window,
         width: width as _,
         height: height as _,
     });

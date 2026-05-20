@@ -12,7 +12,7 @@ mod xi_input;
 use crate::{
     event::EventHandler,
     native::{egl, gl, module, NativeDisplayData, Request},
-    CursorIcon,
+    CursorIcon, MouseButton,
 };
 
 use libx11::*;
@@ -49,6 +49,8 @@ pub struct X11Display {
     repeated_keycodes: [bool; 256],
     empty_cursor: libx11::Cursor,
     cursor_cache: HashMap<CursorIcon, libx11::Cursor>,
+    cursor_icon: CursorIcon,
+    cursor_visible: bool,
     update_requested: bool,
     drag_n_drop: drag_n_drop::X11DnD,
 }
@@ -119,16 +121,27 @@ impl X11Display {
                     event_handler.mouse_button_up_event(btn, x, y);
                 }
             }
-            7 => {
-                // Mouse Enter
-            }
-            8 => {
-                // Mouse Leave
-            }
             6 => {
                 let x = event.xmotion.x as libc::c_float;
                 let y = event.xmotion.y as libc::c_float;
                 event_handler.mouse_motion_event(x, y);
+            }
+            7 => {
+                let x = event.xcrossing.x as libc::c_float;
+                let y = event.xcrossing.y as libc::c_float;
+                let state = event.xcrossing.state as libc::c_long;
+
+                let btn = match () {
+                    _ if (state & Button1MotionMask) != 0 => MouseButton::Left,
+                    _ if (state & Button2MotionMask) != 0 => MouseButton::Middle,
+                    _ if (state & Button3MotionMask) != 0 => MouseButton::Right,
+                    _ => MouseButton::Unknown,
+                };
+                event_handler.mouse_enter_event( btn , x, y);
+
+            }
+            8 => {
+                event_handler.mouse_leave_event();
             }
             9 => {
                 event_handler.window_restored_event();
@@ -329,16 +342,6 @@ impl X11Display {
         (self.libx11.XMoveWindow)(self.display, window, new_x, new_y);
     }
 
-    fn show_mouse(&mut self, shown: bool) {
-        unsafe {
-            if shown {
-                self.set_cursor(self.window, Some(CursorIcon::Default));
-            } else {
-                self.set_cursor(self.window, None);
-            }
-        }
-    }
-
     pub unsafe fn set_cursor_grab(&mut self, window: Window, grab: bool) {
         (self.libx11.XUngrabPointer)(self.display, 0);
 
@@ -407,8 +410,14 @@ impl X11Display {
                     self.update_requested = true;
                 }
                 SetCursorGrab(grab) => self.set_cursor_grab(self.window, grab),
-                ShowMouse(show) => self.show_mouse(show),
-                SetMouseCursor(icon) => self.set_cursor(self.window, Some(icon)),
+                ShowMouse(show) => {
+                    self.cursor_visible = show;
+                    self.set_cursor(self.window, self.cursor_visible.then_some(self.cursor_icon));
+                }
+                SetMouseCursor(icon) => {
+                    self.cursor_icon = icon;
+                    self.set_cursor(self.window, self.cursor_visible.then_some(self.cursor_icon));
+                }
                 SetWindowSize {
                     new_width,
                     new_height,
@@ -419,6 +428,12 @@ impl X11Display {
                 SetFullscreen(fullscreen) => self.set_fullscreen(self.window, fullscreen),
                 ShowKeyboard(..) => {
                     eprintln!("Not implemented for X11")
+                }
+                SetImePosition { .. } => {
+                    // IME position control not implemented for X11 yet
+                }
+                SetImeEnabled(..) => {
+                    // IME enable/disable not implemented for X11 yet
                 }
             }
         }
@@ -722,6 +737,8 @@ where
             cursor_cache: HashMap::new(),
             update_requested: true,
             drag_n_drop: Default::default(),
+            cursor_icon: CursorIcon::Default,
+            cursor_visible: true,
         };
 
         display

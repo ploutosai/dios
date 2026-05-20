@@ -15,7 +15,10 @@ use {
     std::{
         collections::HashMap,
         os::raw::c_void,
-        sync::mpsc::Receiver,
+        sync::{
+            Condvar, Mutex,
+            mpsc::Receiver,
+        },
         time::{Duration, Instant},
     },
 };
@@ -131,6 +134,21 @@ impl MacosDisplay {
 
         Some(event_handler)
     }
+
+    // When the command key is pressed (super key), macOS swallows all key up events.
+    fn generate_swallowed_key_events(&mut self, event: ObjcId) {
+        let event_type: u64 = unsafe { msg_send![event, type] };
+        if event_type == NSEventType::NSKeyUp as u64 {
+            let mods = get_event_key_modifier(event);
+            if mods.logo {
+                if let Some(key) = get_event_keycode(event) {
+                    if let Some(event_handler) = self.context() {
+                        event_handler.key_up_event(key, mods);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl MacosDisplay {
@@ -144,12 +162,46 @@ impl MacosDisplay {
 
     fn move_mouse_inside_window(&self, _window: *mut Object) {
         unsafe {
-            let frame: NSRect = msg_send![self.window, frame];
-            let origin = self.transform_mouse_point(&frame.origin);
-            let point = NSPoint {
-                x: (origin.0 as f64) + (frame.size.width / 2.0),
-                y: (origin.1 as f64) + (frame.size.height / 2.0),
+            // Use the drawable/content view, not the outer NSWindow frame.
+            // NSWindow frame includes titlebar/borders and uses AppKit's bottom-left
+            // screen coordinate system. CGWarpMouseCursorPosition expects CoreGraphics
+            // screen coordinates, whose Y axis is flipped.
+            let bounds: NSRect = msg_send![self.view, bounds];
+
+            let center_in_view = NSPoint {
+                x: bounds.origin.x + bounds.size.width * 0.5,
+                y: bounds.origin.y + bounds.size.height * 0.5,
             };
+
+            let center_in_window: NSPoint = msg_send![
+                self.view,
+                convertPoint: center_in_view
+                toView: nil
+            ];
+
+            let center_rect = NSRect {
+                origin: center_in_window,
+                size: NSSize {
+                    width: 0.0,
+                    height: 0.0,
+                },
+            };
+
+            let center_on_screen: NSRect = msg_send![
+                self.window,
+                convertRectToScreen: center_rect
+            ];
+
+            // AppKit screen coordinates are bottom-left origin.
+            // CoreGraphics cursor warp coordinates are top-left origin.
+            let main_screen: ObjcId = msg_send![class!(NSScreen), mainScreen];
+            let main_screen_frame: NSRect = msg_send![main_screen, frame];
+
+            let point = NSPoint {
+                x: center_on_screen.origin.x,
+                y: main_screen_frame.size.height - center_on_screen.origin.y,
+            };
+
             CGWarpMouseCursorPosition(point);
         }
     }
@@ -204,7 +256,15 @@ impl MacosDisplay {
             SetWindowPosition { .. } => {
                 eprintln!("Not implemented for macos");
             }
-            _ => {}
+            ShowKeyboard(..) => {
+                // Not applicable on macOS desktop
+            }
+            SetImePosition { .. } => {
+                // IME position control not implemented for macOS yet
+            }
+            SetImeEnabled(..) => {
+                // IME enable/disable not implemented for macOS yet
+            }
         }
     }
 }
@@ -247,15 +307,74 @@ impl Modifiers {
         }
     }
 }
+
+fn get_app_payload() -> &'static mut MacosDisplay {
+    unsafe {
+        let d = native_display().lock().unwrap();
+        let ptr: *mut c_void = *(*d.view).get_ivar("display_ptr");
+        &mut *(ptr as *mut MacosDisplay)
+    }
+}
+
+// Called when the application is requested to quit. Sends out the quit_requested event.
+// Returns true if the quit was ordered, false if the quit was canceled.
+fn handle_quit(payload: &mut MacosDisplay) -> bool {
+    // only give user-code a chance to intervene when quit wasn't already called
+    if !native_display().lock().unwrap().quit_ordered {
+        native_display().lock().unwrap().quit_requested = true;
+        if let Some(event_handler) = payload.context() {
+            event_handler.quit_requested_event();
+        }
+
+        // // user code hasn't intervened, quit the app
+        if native_display().lock().unwrap().quit_requested {
+            native_display().lock().unwrap().quit_ordered = true;
+        }
+    }
+    native_display().lock().unwrap().quit_ordered
+}
+
 pub fn define_app_delegate() -> *const Class {
+    extern "C" fn application_did_update(this: &mut Object, _: Sel, _: ObjcId) {
+        unsafe {
+            let activated: bool = *this.get_ivar("activated");
+            if !activated {
+                this.set_ivar("activated", true);
+                let ns_app: ObjcId = msg_send![class!(NSRunningApplication), currentApplication];
+                let options =
+                    NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps;
+                msg_send_![ns_app, activateWithOptions: options];
+            }
+        }
+    }
+
+    extern "C" fn application_should_terminate(_this: &mut Object, _: Sel, _: ObjcId) -> u64 {
+        let payload = get_app_payload();
+        if handle_quit(payload) {
+            NSApplicationTerminateReply::NSApplicationTerminateNow as u64
+        } else {
+            NSApplicationTerminateReply::NSApplicationTerminateCancel as u64
+        }
+    }
+
     let superclass = class!(NSObject);
     let mut decl = ClassDecl::new("NSAppDelegate", superclass).unwrap();
     unsafe {
         decl.add_method(
+            sel!(applicationShouldTerminate:),
+            application_should_terminate as extern "C" fn(&mut Object, Sel, ObjcId) -> u64,
+        );
+        decl.add_method(
             sel!(applicationShouldTerminateAfterLastWindowClosed:),
             yes1 as extern "C" fn(&Object, Sel, ObjcId) -> BOOL,
         );
+        decl.add_method(
+            sel!(applicationDidUpdate:),
+            application_did_update as extern "C" fn(&mut Object, Sel, ObjcId),
+        );
     }
+
+    decl.add_ivar::<bool>("activated");
     decl.register()
 }
 
@@ -268,21 +387,7 @@ pub fn define_cocoa_window_delegate() -> *const Class {
             msg_send_![capture_manager, stopCapture];
         }
 
-        // only give user-code a chance to intervene when sapp_quit() wasn't already called
-        if !native_display().lock().unwrap().quit_ordered {
-            // if window should be closed and event handling is enabled, give user code
-            // a chance to intervene via sapp_cancel_quit()
-            native_display().lock().unwrap().quit_requested = true;
-            if let Some(event_handler) = payload.context() {
-                event_handler.quit_requested_event();
-            }
-
-            // user code hasn't intervened, quit the app
-            if native_display().lock().unwrap().quit_requested {
-                native_display().lock().unwrap().quit_ordered = true;
-            }
-        }
-        if native_display().lock().unwrap().quit_ordered {
+        if handle_quit(payload) {
             YES
         } else {
             NO
@@ -303,6 +408,9 @@ pub fn define_cocoa_window_delegate() -> *const Class {
         if payload.gl_context.is_null() {
             // Startup: the gl_context has not yet been created.
             return;
+        }
+        if let Some(event_handler) = payload.context() {
+            event_handler.window_minimized_event();
         }
         unsafe {
             msg_send_![payload.gl_context, update];
@@ -333,6 +441,18 @@ pub fn define_cocoa_window_delegate() -> *const Class {
                 let state: u64 = msg_send![payload.window, occlusionState];
                 payload.occluded = state & NSWindowOcclusionStateVisible == 0;
             }
+        }
+    }
+    extern "C" fn window_did_become_key(this: &Object, _: Sel, _: ObjcId) {
+        let payload = get_window_payload(this);
+        if let Some(event_handler) = payload.context() {
+            event_handler.window_restored_event();
+        }
+    }
+    extern "C" fn window_did_resign_key(this: &Object, _: Sel, _: ObjcId) {
+        let payload = get_window_payload(this);
+        if let Some(event_handler) = payload.context() {
+            event_handler.window_minimized_event();
         }
     }
 
@@ -369,6 +489,14 @@ pub fn define_cocoa_window_delegate() -> *const Class {
         decl.add_method(
             sel!(windowDidChangeOcclusionState:),
             window_did_change_occlusion_state as extern "C" fn(&Object, Sel, ObjcId),
+        );
+        decl.add_method(
+            sel!(windowDidBecomeKey:),
+            window_did_become_key as extern "C" fn(&Object, Sel, ObjcId),
+        );
+        decl.add_method(
+            sel!(windowDidResignKey:),
+            window_did_resign_key as extern "C" fn(&Object, Sel, ObjcId),
         );
     }
     // Store internal state as user data
@@ -525,6 +653,75 @@ unsafe fn view_base_decl(decl: &mut ClassDecl) {
         }
     }
 
+    extern "C" fn dragging_entered(_this: &Object, _sel: Sel, sender: ObjcId) -> NSDragOperation {
+        unsafe {
+            let pasteboard: ObjcId = msg_send![sender, draggingPasteboard];
+            let file_types: ObjcId =
+                msg_send![class!(NSArray), arrayWithObject: NSPasteboardTypeFileURL];
+            let matched_type: ObjcId = msg_send![pasteboard, availableTypeFromArray: file_types];
+            if matched_type != nil {
+                NSDragOperation::Copy
+            } else {
+                NSDragOperation::None
+            }
+        }
+    }
+
+    extern "C" fn perform_drag_operation(this: &Object, _sel: Sel, sender: ObjcId) -> BOOL {
+        let payload = get_window_payload(this);
+
+        unsafe {
+            let pasteboard: ObjcId = msg_send![sender, draggingPasteboard];
+            let classes: ObjcId = msg_send![class!(NSArray), arrayWithObject: class!(NSURL)];
+            let urls: ObjcId = msg_send![pasteboard, readObjectsForClasses: classes options: nil];
+            if urls == nil {
+                return NO;
+            }
+
+            let count: usize = msg_send![urls, count];
+            let mut d = native_display().lock().unwrap();
+            d.dropped_files = Default::default();
+
+            for i in 0..count {
+                let url: ObjcId = msg_send![urls, objectAtIndex: i];
+                if url == nil {
+                    continue;
+                }
+
+                let is_file_url: BOOL = msg_send![url, isFileURL];
+                if is_file_url == NO {
+                    continue;
+                }
+
+                let path_nsstring: ObjcId = msg_send![url, path];
+                if path_nsstring == nil {
+                    continue;
+                }
+
+                let path = std::path::PathBuf::from(nsstring_to_string(path_nsstring));
+                if let Ok(bytes) = std::fs::read(&path) {
+                    d.dropped_files.paths.push(path);
+                    d.dropped_files.bytes.push(bytes);
+                }
+            }
+
+            let has_dropped_files = !d.dropped_files.paths.is_empty();
+
+            // Drop the native display lock before invoking user callbacks.
+            drop(d);
+
+            if !has_dropped_files {
+                return NO;
+            }
+
+            if let Some(event_handler) = payload.context() {
+                event_handler.files_dropped_event();
+            }
+
+            YES
+        }
+    }
+
     extern "C" fn flags_changed(this: &Object, _sel: Sel, event: ObjcId) {
         fn produce_event(
             payload: &mut MacosDisplay,
@@ -677,6 +874,14 @@ unsafe fn view_base_decl(decl: &mut ClassDecl) {
         flags_changed as extern "C" fn(&Object, Sel, ObjcId),
     );
     decl.add_method(sel!(keyUp:), key_up as extern "C" fn(&Object, Sel, ObjcId));
+    decl.add_method(
+        sel!(draggingEntered:),
+        dragging_entered as extern "C" fn(&Object, Sel, ObjcId) -> NSDragOperation,
+    );
+    decl.add_method(
+        sel!(performDragOperation:),
+        perform_drag_operation as extern "C" fn(&Object, Sel, ObjcId) -> BOOL,
+    );
 }
 
 pub fn define_opengl_view_class() -> *const Class {
@@ -841,7 +1046,9 @@ unsafe fn create_opengl_view(
 
     display.gl_context = msg_send![gl_context, initWithFormat: glpixelformat_obj shareContext: nil];
 
-    let mut swap_interval = 1;
+    // Set the swap interval to 0 to disable vsync, because we're using CVDisplayLink for frame pacing
+    // and we don't want to have an extra vsync delay on top of that.
+    let mut swap_interval = 0;
     let () = msg_send![display.gl_context,
                 setValues:&mut swap_interval
                 forParameter:NSOpenGLContextParameterSwapInterval];
@@ -861,6 +1068,97 @@ impl crate::native::Clipboard for MacosClipboard {
         None
     }
     fn set(&mut self, _data: &str) {}
+}
+
+struct FrameSignal {
+    frame_ready: Mutex<bool>,
+    cond: Condvar,
+}
+
+extern "C" fn display_link_frame_ready_callback(
+    _display_link: CVDisplayLinkRef,
+    _now: *const CVTimeStamp,
+    _output_time: *const CVTimeStamp,
+    _flags_in: CVOptionFlags,
+    _flags_out: *mut CVOptionFlags,
+    display_link_context: *mut c_void,
+) -> i32 {
+    unsafe {
+        let frame_signal = &*(display_link_context as *const FrameSignal);
+        if let Ok(mut frame_ready) = frame_signal.frame_ready.lock() {
+            *frame_ready = true;
+            frame_signal.cond.notify_one();
+        }
+    }
+    0
+}
+
+struct FramePacer {
+    display_link: CVDisplayLinkRef,
+    frame_signal: Box<FrameSignal>,
+}
+
+impl FramePacer {
+    fn new() -> Option<Self> {
+        unsafe {
+            let mut display_link: CVDisplayLinkRef = std::ptr::null_mut();
+            if CVDisplayLinkCreateWithActiveCGDisplays(&mut display_link as *mut _) != 0
+                || display_link.is_null()
+            {
+                return None;
+            }
+
+            let frame_signal = Box::new(FrameSignal {
+                frame_ready: Mutex::new(false),
+                cond: Condvar::new(),
+            });
+
+            if CVDisplayLinkSetOutputCallback(
+                display_link,
+                display_link_frame_ready_callback,
+                (&*frame_signal as *const FrameSignal) as *mut c_void,
+            ) != 0
+            {
+                CVDisplayLinkRelease(display_link);
+                return None;
+            }
+
+            if CVDisplayLinkStart(display_link) != 0 {
+                CVDisplayLinkRelease(display_link);
+                return None;
+            }
+
+            Some(Self {
+                display_link,
+                frame_signal,
+            })
+        }
+    }
+
+    fn wait_next_frame(&self, timeout: Duration) {
+        let mut frame_ready = self.frame_signal.frame_ready.lock().unwrap();
+        if *frame_ready {
+            *frame_ready = false;
+            return;
+        }
+
+        let (mut frame_ready, _) = self.frame_signal.cond.wait_timeout(frame_ready, timeout).unwrap();
+
+        if *frame_ready {
+            *frame_ready = false;
+        }
+    }
+}
+
+impl Drop for FramePacer {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.display_link.is_null() {
+                let _ = CVDisplayLinkStop(self.display_link);
+                CVDisplayLinkRelease(self.display_link);
+            }
+        }
+    }
 }
 
 unsafe extern "C" fn release_data(info: *mut c_void, _: *const c_void, _: usize) {
@@ -1033,6 +1331,7 @@ where
 
     let app_delegate_class = define_app_delegate();
     let app_delegate_instance: ObjcId = msg_send![app_delegate_class, new];
+    (*app_delegate_instance).set_ivar("activated", false);
 
     let ns_app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
     let () = msg_send![ns_app, setDelegate: app_delegate_instance];
@@ -1094,6 +1393,11 @@ where
     }
     (*view).set_ivar("display_ptr", &mut display as *mut _ as *mut c_void);
 
+    // Tell the view to accept file drops. Without this, dragging files onto the window will do nothing.
+    let dragged_types: ObjcId =
+        msg_send![class!(NSArray), arrayWithObject: NSPasteboardTypeFileURL];
+    let () = msg_send![view, registerForDraggedTypes: dragged_types];
+
     display.window = window;
     display.view = view;
 
@@ -1124,7 +1428,6 @@ where
     }
 
     msg_send_![window, orderFront: nil];
-    let () = msg_send![ns_app, activateIgnoringOtherApps: YES];
     let () = msg_send![window, makeKeyAndOrderFront: nil];
 
     let () = msg_send![ns_app, finishLaunching];
@@ -1148,8 +1451,19 @@ where
     // Basically reimplementing msg_send![ns_app, run] here
     let distant_future: ObjcId = msg_send![class!(NSDate), distantFuture];
     let distant_past: ObjcId = msg_send![class!(NSDate), distantPast];
+    let frame_pacer = if conf.platform.blocking_event_loop {
+        None
+    } else {
+        FramePacer::new()
+    };
     let mut done = false;
     while !(done || crate::native_display().lock().unwrap().quit_ordered) {
+
+        // Wait at the top for just in time rendering
+        if let Some(frame_pacer) = frame_pacer.as_ref() {
+            frame_pacer.wait_next_frame(Duration::from_millis(50));
+        }
+
         while let Ok(request) = display.native_requests.try_recv() {
             display.process_request(request);
         }
@@ -1165,6 +1479,10 @@ where
         if block_on_wait {
             let event: ObjcId = msg_send![ns_app, nextEventMatchingMask: NSEventMask::NSAnyEventMask untilDate: distant_future inMode:NSDefaultRunLoopMode dequeue:YES];
 
+            if event != nil {
+                display.generate_swallowed_key_events(event);
+            }
+
             let () = msg_send![ns_app, sendEvent:event];
         } else {
             loop {
@@ -1172,6 +1490,8 @@ where
                 if event == nil {
                     break;
                 }
+                display.generate_swallowed_key_events(event);
+
                 let () = msg_send![ns_app, sendEvent:event];
             }
         }
@@ -1179,5 +1499,6 @@ where
         if !conf.platform.blocking_event_loop || display.update_requested {
             perform_redraw(&mut display, conf.platform.apple_gfx_api, false);
         }
+
     }
 }

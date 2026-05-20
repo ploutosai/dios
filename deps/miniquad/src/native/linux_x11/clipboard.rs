@@ -1,4 +1,4 @@
-#![allow(non_upper_case_globals, non_snake_case, static_mut_refs)]
+#![allow(non_upper_case_globals, non_snake_case)]
 
 //! Clipboard implementation for X11
 //!

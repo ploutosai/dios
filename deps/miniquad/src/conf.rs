@@ -152,6 +152,14 @@ pub struct Platform {
     /// [`schedule_update`]: super::window::schedule_update
     pub blocking_event_loop: bool,
 
+    /// When `blocking_event_loop` is enabled, we can set this value to periodically
+    /// wakeup the `update()` and `draw()` functions. This reduces CPU usage vs
+    /// continuously drawing without having to continuously schedule updates that can
+    /// choke the receiver queue.
+    ///
+    /// Currently supported only on Android.
+    pub sleep_interval_ms: Option<u32>,
+
     /// If `true`, the framebuffer includes an alpha channel.
     /// Currently supported only on Android.
     ///
@@ -169,6 +177,10 @@ pub struct Platform {
     // for most purposes they are the same so we just use class name for simplicity
     // https://unix.stackexchange.com/questions/494169/
     pub linux_wm_class: &'static str,
+
+    /// Whether to automatically setup the panic hook for Android.
+    /// Set this to false if your app does its own panic_hook setup to avoid conflicts.
+    pub android_panic_hook: bool,
 }
 
 impl Default for Platform {
@@ -179,10 +191,12 @@ impl Default for Platform {
             apple_gfx_api: AppleGfxApi::default(),
             webgl_version: WebGLVersion::default(),
             blocking_event_loop: false,
+            sleep_interval_ms: None,
             swap_interval: None,
             framebuffer_alpha: false,
             wayland_decorations: WaylandDecorations::default(),
             linux_wm_class: "miniquad-application",
+            android_panic_hook: true,
         }
     }
 }

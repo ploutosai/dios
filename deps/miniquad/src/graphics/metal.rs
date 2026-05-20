@@ -525,14 +525,11 @@ impl RenderingBackend for MetalContext {
         stencil: Option<i32>,
     ) {
         // TODO: begin_pass/end_pass works, but is far from optimal
-        self.begin_pass(
-            None,
-            PassAction::Clear {
-                color,
-                depth,
-                stencil,
-            },
-        );
+        self.begin_default_pass(PassAction::Clear {
+            color,
+            depth,
+            stencil,
+        });
         self.end_render_pass();
     }
 
@@ -1149,6 +1146,10 @@ impl RenderingBackend for MetalContext {
                        atIndex:0];
         }
         self.current_ub_offset = roundup_ub_buffer(self.current_ub_offset + size as u64);
+    }
+
+    fn begin_default_pass(&mut self, action: PassAction) {
+        self.begin_pass(None, action)
     }
 
     fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {

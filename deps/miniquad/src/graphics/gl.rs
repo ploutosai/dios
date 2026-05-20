@@ -502,11 +502,7 @@ impl Textures {
         match texture.0 {
             TextureIdInner::Raw(RawId::OpenGl(texture)) => Texture {
                 raw: TextureOrRenderbuffer::Texture(texture),
-                params: TextureParams {
-                    width: 400,
-                    height: 400,
-                    ..Default::default()
-                },
+                params: Default::default(),
             },
             #[cfg(target_vendor = "apple")]
             TextureIdInner::Raw(RawId::Metal(..)) => panic!("Metal texture in OpenGL context!"),
@@ -886,18 +882,6 @@ fn gl_info() -> ContextInfo {
 }
 
 impl RenderingBackend for GlContext {
-    fn reset_cache(&mut self) {
-        self.cache.clear_buffer_bindings();
-        self.cache.clear_texture_bindings();
-        self.cache.clear_vertex_attributes();
-        self.cache.cur_pipeline = None;
-        self.cache.color_blend = None;
-        self.cache.alpha_blend = None;
-        self.cache.stencil = None;
-        self.cache.color_write = (true, true, true, true);
-        self.cache.cull_face = CullFace::Nothing;
-    }
-
     fn info(&self) -> ContextInfo {
         self.info.clone()
     }
@@ -922,20 +906,6 @@ impl RenderingBackend for GlContext {
         params: TextureParams,
     ) -> TextureId {
         let texture = Texture::new(self, access, source, params);
-        self.textures.0.push(texture);
-        TextureId(TextureIdInner::Managed(self.textures.0.len() - 1))
-    }
-
-    fn new_texture_from_raw(&mut self, texture_id: RawId, params: TextureParams) -> TextureId {
-        let texture = match texture_id {
-            RawId::OpenGl(texture) => TextureOrRenderbuffer::Texture(texture),
-            #[cfg(target_vendor = "apple")]
-            RawId::Metal(..) => panic!("Metal texture in OpenGL context!"),
-        };
-        let texture = Texture {
-            raw: texture,
-            params,
-        };
         self.textures.0.push(texture);
         TextureId(TextureIdInner::Managed(self.textures.0.len() - 1))
     }
@@ -1126,7 +1096,7 @@ impl RenderingBackend for GlContext {
             if let Some(depth_img) = depth_img {
                 let texture = self.textures.get(depth_img);
                 if texture.params.sample_count > 1 {
-                    let raw = texture.raw.texture().unwrap();
+                    let raw = texture.raw.renderbuffer().unwrap();
                     glFramebufferRenderbuffer(
                         GL_FRAMEBUFFER,
                         GL_DEPTH_ATTACHMENT,
@@ -1198,6 +1168,12 @@ impl RenderingBackend for GlContext {
 
         for color_texture in &render_pass.color_textures {
             self.delete_texture(*color_texture);
+        }
+        if let Some(resolves) = render_pass.resolves {
+            for (fb, texture) in resolves {
+                unsafe { glDeleteFramebuffers(1, &fb as *const _) }
+                self.delete_texture(texture);
+            }
         }
         if let Some(depth_texture) = render_pass.depth_texture {
             self.delete_texture(depth_texture);
@@ -1653,17 +1629,11 @@ impl RenderingBackend for GlContext {
         }
     }
 
-    fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
-        self.begin_pass_ext(pass, None, None, action);
+    fn begin_default_pass(&mut self, action: PassAction) {
+        self.begin_pass(None, action);
     }
 
-    fn begin_pass_ext(
-        &mut self,
-        pass: Option<RenderPass>,
-        viewport: Option<(i32, i32, i32, i32)>,
-        scissor: Option<(i32, i32, i32, i32)>,
-        action: PassAction,
-    ) {
+    fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
         self.cache.cur_pass = pass;
         let (framebuffer, w, h) = match pass {
             None => {
@@ -1694,16 +1664,8 @@ impl RenderingBackend for GlContext {
         };
         unsafe {
             glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-            if let Some((x, y, w, h)) = viewport {
-                glViewport(x, y, w, h);
-            } else {
-                glViewport(0, 0, w, h);
-            }
-            if let Some(clip) = scissor {
-                glScissor(clip.0, h as i32 - (clip.1 + clip.3), clip.2, clip.3);
-            } else {
-                glScissor(0, 0, w, h);
-            }
+            glViewport(0, 0, w, h);
+            glScissor(0, 0, w, h);
         }
         match action {
             PassAction::Nothing => {}
@@ -1747,6 +1709,11 @@ impl RenderingBackend for GlContext {
             glBindFramebuffer(GL_FRAMEBUFFER, self.default_framebuffer);
             self.cache.bind_buffer(GL_ARRAY_BUFFER, 0, None);
             self.cache.bind_buffer(GL_ELEMENT_ARRAY_BUFFER, 0, None);
+
+            // On Android when resizing the screen, visual tearing may occur
+            // on some devices since clearing the screen is clipped by scissor.
+            // So disable it when cleaning up the render pass.
+            glDisable(GL_SCISSOR_TEST);
         }
     }
 

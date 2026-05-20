@@ -186,11 +186,6 @@ pub const WL_SUBSURFACE_PLACE_BELOW_SINCE_VERSION: u32 = 1;
 pub const WL_SUBSURFACE_SET_SYNC_SINCE_VERSION: u32 = 1;
 pub const WL_SUBSURFACE_SET_DESYNC_SINCE_VERSION: u32 = 1;
 
-pub const ENOMEM: c_int = 12;
-pub const EFAULT: c_int = 14;
-pub const EINVAL: c_int = 22;
-pub const EPROTO: c_int = 71;
-
 pub type wl_shm_format = ::core::ffi::c_uint;
 
 pub const wl_shm_format_WL_SHM_FORMAT_ARGB8888: wl_shm_format = 0;
@@ -599,8 +594,6 @@ crate::declare_module!(
     pub fn wl_display_disconnect(*mut wl_display),
     pub fn wl_display_get_fd(*mut wl_display) -> c_int,
     pub fn wl_display_create_queue(*mut wl_display) -> *mut wl_event_queue,
-    pub fn wl_display_create_queue_with_name(*mut wl_display, *const c_char) -> *mut wl_event_queue,
-    pub fn wl_event_queue_get_name(*mut wl_event_queue) -> *const c_char,
     pub fn wl_event_queue_destroy(*mut wl_event_queue),
     pub fn wl_display_flush(*mut wl_display),
     pub fn wl_display_roundtrip(*mut wl_display) -> c_int,
@@ -616,7 +609,6 @@ crate::declare_module!(
     pub fn wl_display_get_error(*mut wl_display) -> c_int,
     pub fn wl_display_get_protocol_error(*mut wl_display, *mut *const wl_interface, *mut c_uint) -> c_uint,
     pub fn wl_proxy_set_queue(*mut wl_proxy, *mut wl_event_queue),
-    pub fn wl_proxy_get_queue(*mut wl_proxy) -> *mut wl_event_queue,
     pub fn wl_proxy_add_listener(*mut wl_proxy, *mut Option<unsafe extern "C" fn()>, *mut c_void) -> c_int,
     pub fn wl_proxy_destroy(*mut wl_proxy),
     pub fn wl_proxy_get_version(*mut wl_proxy) -> c_uint,
