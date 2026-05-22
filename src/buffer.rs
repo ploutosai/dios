@@ -724,7 +724,8 @@ impl Buffer {
 
         let parent = self.begin_edit();
         for (start, end, new_prefix) in edits.iter().rev() {
-            self.rope.edit(*start..*end, Rope::from(new_prefix.as_str()));
+            self.rope
+                .edit(*start..*end, Rope::from(new_prefix.as_str()));
         }
         let len = self.len();
         self.cursor.offset = new_cursor.min(len);

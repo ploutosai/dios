@@ -402,6 +402,8 @@ fn EmbeddedEditorApp() -> Element {
         scroll_top: use_signal(|| 0.0f64),
         restore_scroll_tick: use_signal(|| 0u64),
         completion: use_signal(|| None),
+        compile_commands: use_signal(std::collections::HashMap::new),
+        compile_prompt: use_signal(|| None),
     };
     use_context_provider(|| ctx);
 

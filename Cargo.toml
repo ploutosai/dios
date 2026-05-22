@@ -12,8 +12,7 @@ blitz-paint = { path = "./deps/blitz/packages/blitz-paint" }
 anyrender_nonaquad = { path = "./deps/blitz/packages/anyrender_nonaquad" }
 anyrender = "0.8"
 miniquad = "0.4.8"
-# Crates.io macroquad; the patched miniquad below is applied transitively.
-macroquad = "0.4.14"
+macroquad = { version = "0.4.15", features = [ "puffin" ] }
 nona = { path = "./deps/nonaquad/nona" }
 nonaquad = { path = "./deps/nonaquad/nonaquad" }
 skrifa = "0.40"
@@ -87,3 +86,4 @@ miniquad = { path = "deps/miniquad" }
 subsecond = { path = "deps/subsecond" }
 puffin = { path = "deps/puffin" }
 web-time = { path = "deps/web-time" }
+macroquad = { path = "../macroquad" }

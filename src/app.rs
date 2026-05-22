@@ -7,6 +7,7 @@ use crate::editor::CodeEditor;
 use crate::lsp::LspManager;
 use crate::overlay::{OverlayView, RightPaneView};
 use dioxus::prelude::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Which pane currently receives keyboard input.
@@ -41,7 +42,8 @@ pub struct AppCtx {
     /// Project root used for file discovery and command execution.
     /// `None` means no project is currently loaded — search/compile are
     /// disabled and the file picker can only navigate via foreign-tree
-    /// path mode (`./`, `../`, `~/`, `/`).
+    /// path mode (`./`, `../`, `~/`, `/`). Explicit buffer switches update
+    /// this to the newly focused buffer's project when one can be inferred.
     pub project_root: Signal<Option<PathBuf>>,
     /// Cached list of files under `project_root` for the file picker.
     /// Empty whenever `project_root` is `None`.
@@ -84,6 +86,23 @@ pub struct AppCtx {
     /// screen — keystrokes are routed to it for navigation / accept /
     /// dismiss before normal editor handling.
     pub completion: Signal<Option<CompletionState>>,
+    /// Per-project remembered compile command (the one the user last ran
+    /// via the C-k c prompt). Keyed by active project root; not persisted
+    /// across sessions. Projects without an entry default to `cargo check`.
+    pub compile_commands: Signal<HashMap<PathBuf, String>>,
+    /// Active compile-command prompt rendered in the minibuffer. Modeled
+    /// after `isearch` rather than as an `Overlay` variant because the UI
+    /// lives inline in the minibuffer (no centered overlay box), and a
+    /// dedicated signal makes the Minibuffer's subscription unambiguous.
+    pub compile_prompt: Signal<Option<CompilePromptState>>,
+}
+
+/// State of an active compile-command prompt in the minibuffer.
+#[derive(Clone)]
+pub struct CompilePromptState {
+    pub query: String,
+    /// Byte offset within `query` where the caret sits.
+    pub cursor: usize,
 }
 
 /// State of an open completion popup, anchored at the buffer offset where
@@ -223,6 +242,8 @@ pub fn App() -> Element {
         scroll_top: use_signal(|| 0.0f64),
         restore_scroll_tick: use_signal(|| 0u64),
         completion: use_signal(|| None),
+        compile_commands: use_signal(HashMap::new),
+        compile_prompt: use_signal(|| None),
     };
     use_context_provider(|| ctx);
 
@@ -416,10 +437,10 @@ pub fn App() -> Element {
 
 /// The active project root: target of compile / ripgrep / file-picker.
 ///
-/// Sticky — buffer switches and jumps from search/compile results do not
-/// change it. Updated only via [`switch_active_project`], which the
-/// foreign-tree branch of the file picker calls when the user opens a file
-/// outside the current tree.
+/// Explicit file opens and buffer switches update it to the focused buffer's
+/// project when one can be inferred. Location jumps (LSP / rg / compile
+/// results) intentionally do not force a project switch unless their caller
+/// asks for one.
 ///
 /// Returns `None` when no project has been loaded yet (the user launched
 /// `dios` with no arg and hasn't opened a file).
@@ -441,6 +462,34 @@ pub fn switch_active_project(ctx: &AppCtx, new_root: PathBuf) {
     let mut file_index = ctx.file_index;
     file_index.set(crate::files::scan_project(&new_root));
     project_root.set(Some(new_root));
+}
+
+/// Update the active project to match buffer `idx`, if that buffer has a
+/// backing file/project. For files without a `.git` / `.projectile` ancestor,
+/// keep the current active root when the file is inside it; otherwise fall
+/// back to the file's parent directory.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn switch_active_project_to_buffer(ctx: &AppCtx, idx: usize) {
+    let (crate_root, path) = {
+        let bufs = ctx.buffers.read();
+        let Some(buf) = bufs.get(idx) else { return };
+        (buf.project_root.clone(), buf.path.clone())
+    };
+
+    if let Some(root) = crate_root {
+        switch_active_project(ctx, root);
+        return;
+    }
+
+    let Some(path) = path else { return };
+    if let Some(active) = ctx.project_root.read().clone() {
+        if path.starts_with(&active) {
+            return;
+        }
+    }
+    if let Some(parent) = path.parent() {
+        switch_active_project(ctx, parent.to_path_buf());
+    }
 }
 
 /// Snapshot the current buffer's cursor as a [`NavLocation`] and push it
@@ -476,7 +525,13 @@ pub fn push_nav_origin(ctx: &AppCtx) {
 pub fn nav_back(ctx: &AppCtx) {
     let mut history = ctx.nav_history;
     let entry = history.write().pop();
-    let Some(NavLocation { path, line, col, scroll_top }) = entry else {
+    let Some(NavLocation {
+        path,
+        line,
+        col,
+        scroll_top,
+    }) = entry
+    else {
         let mut minibuf_msg = ctx.minibuf_msg;
         minibuf_msg.set("nav: history empty".to_string());
         return;
@@ -541,6 +596,7 @@ fn Minibuffer() -> Element {
     let msg = ctx.minibuf_msg.read().clone();
     let ck = *ctx.ck_prefix.read();
     let isearch = ctx.isearch.read().clone();
+    let compile_prompt = ctx.compile_prompt.read().clone();
 
     if let Some(s) = isearch {
         let label = match s.direction {
@@ -554,6 +610,20 @@ fn Minibuffer() -> Element {
                 span { class: "mb-search-label", "{prefix}{label}: " }
                 span { class: "mb-search-query", "{s.query}" }
                 span { class: "mb-search-caret", " " }
+            }
+        };
+    }
+
+    if let Some(CompilePromptState { query, cursor }) = compile_prompt {
+        let cursor = cursor.min(query.len());
+        let before = &query[..cursor];
+        let after = &query[cursor..];
+        return rsx! {
+            div { id: "minibuffer",
+                span { class: "mb-search-label", "Compile: " }
+                span { class: "mb-search-query", "{before}" }
+                span { class: "mb-search-caret", " " }
+                span { class: "mb-search-query", "{after}" }
             }
         };
     }

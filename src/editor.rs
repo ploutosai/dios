@@ -1,7 +1,7 @@
 /// Code editor: single view with syntax highlighting, cursor, and selection.
 use crate::app::{AppCtx, Overlay, Pane, RightPaneState};
 use crate::commands;
-use crate::overlay::{filter_paths, filter_strings};
+use crate::overlay::{buffer_switcher_labels, filter_paths, filter_strings};
 use crate::syntax;
 use dioxus::html::geometry::ClientPoint;
 use dioxus::html::geometry::PixelsVector2D;
@@ -292,9 +292,16 @@ pub fn CodeEditor() -> Element {
 
     // Viewport virtualization in visual-row space. Only emit DOM for
     // visual rows actually on screen (plus overscan).
-    let st = *scroll_top.read();
     let vh = *viewport_h.read();
     let lh = m.line_height.max(1.0);
+    // Clamp the signal to the current buffer's valid range. Buffer
+    // switches change `total_visual_rows` under us, and a stale signal
+    // (e.g. left over from a tall buffer when switching to a short
+    // one) would otherwise collapse `first_visual..last_visual` to an
+    // empty range and emit no DOM rows. The scroll-to-cursor tick path
+    // syncs both the body element and the signal back to a sensible
+    // value, but it runs *after* this render.
+    let st = clamp_scroll_top(*scroll_top.read(), total_visual_rows, vh, lh);
     let first_visual = ((st / lh).floor() as usize)
         .saturating_sub(RENDER_OVERSCAN)
         .min(total_visual_rows);
@@ -518,10 +525,7 @@ pub fn CodeEditor() -> Element {
         }
         let target = *scroll_top.peek();
         if let Some(ref el) = body_el.peek().as_ref() {
-            let _ = el.scroll(
-                PixelsVector2D::new(0.0, target),
-                ScrollBehavior::Instant,
-            );
+            let _ = el.scroll(PixelsVector2D::new(0.0, target), ScrollBehavior::Instant);
             // Suppress the next ensure_cursor_visible's "moving up/down"
             // heuristic from immediately re-scrolling. Set the baseline to
             // the row the restored cursor lives on.
@@ -534,11 +538,20 @@ pub fn CodeEditor() -> Element {
         }
     });
 
-    // External cursor jumps (rg/error result click, open-file-at-line) bump
-    // `scroll_to_cursor_tick`. The closure-based `ensure_cursor_visible` only
-    // runs from key/mouse handlers in this component, so external moves leave
-    // the viewport stale. Watch the tick and scroll the cursor into view when
-    // it changes.
+    // External cursor jumps (rg/error result click, open-file-at-line) and
+    // buffer switches bump `scroll_to_cursor_tick`. The closure-based
+    // `ensure_cursor_visible` only runs from key/mouse handlers in this
+    // component, so external moves leave the viewport stale. Watch the tick
+    // and scroll the cursor into view when it changes.
+    //
+    // We always push the resolved scroll target into the body element here,
+    // even when the cursor already sits inside the signal-tracked viewport.
+    // Buffer switches change `total_visual_rows` under the body — the
+    // browser auto-clamps the body's actual scrollTop, but the `scroll_top`
+    // signal can be left out of sync with it. Re-asserting the target on
+    // every tick gets the two back in lockstep; without it, switching from
+    // a tall buffer scrolled deep into a shorter buffer leaves the body
+    // showing a blank area until the user scrolls.
     use_effect(move || {
         let tick = *scroll_to_cursor_tick.read();
         if tick == 0 {
@@ -557,7 +570,13 @@ pub fn CodeEditor() -> Element {
 
         let lh = m.line_height.max(1.0);
         let vh = *viewport_h.peek();
-        let st = *scroll_top.peek();
+        // Buffer switches leave the shared `scroll_top` signal holding the
+        // OLD buffer's offset, which can be far past the NEW buffer's max.
+        // Clamp before the viewport test so the "cursor already visible"
+        // branch can't preserve an out-of-range value that the rendered
+        // content doesn't cover (which is what made the body show blank
+        // until the user scrolled).
+        let st = clamp_scroll_top(*scroll_top.peek(), total, vh, lh);
         let cursor_top = LAYER_PAD + (row as f64) * lh;
         let cursor_bottom = cursor_top + lh;
         let viewport_top = st;
@@ -567,18 +586,19 @@ pub fn CodeEditor() -> Element {
         } else if cursor_bottom > viewport_bottom {
             cursor_bottom - vh
         } else {
-            last_cursor_line.set(row);
-            return;
+            // Cursor already in viewport — keep the (clamped) target and
+            // push it through so the body element re-syncs to the signal.
+            st
         };
         let new_scroll_y = clamp_scroll_top(new_scroll_y, total, vh, lh);
 
+        last_cursor_line.set(row);
         if let Some(ref el) = body_el.peek().as_ref() {
             let _ = el.scroll(
                 PixelsVector2D::new(0.0, new_scroll_y),
                 ScrollBehavior::Instant,
             );
             scroll_top.set(new_scroll_y);
-            last_cursor_line.set(row);
         }
     });
 
@@ -699,6 +719,13 @@ pub fn CodeEditor() -> Element {
                 let overlay_active = overlay.read().is_some();
                 if overlay_active {
                     handle_overlay_key(&key, ctrl, ctx);
+                    return;
+                }
+
+                // --- 1a. Compile-command prompt active: capture all keys ---
+                #[cfg(not(target_arch = "wasm32"))]
+                if ctx.compile_prompt.read().is_some() {
+                    compile_prompt_handle_key(&key, ctrl, ctx);
                     return;
                 }
 
@@ -1475,7 +1502,6 @@ pub(crate) fn handle_ck_command(key: &Key, ctrl: bool, ctx: AppCtx) -> bool {
         mut current,
         mut overlay,
         mut right_pane,
-        mut right_pane_selected,
         mut focus,
         editor_el,
         right_pane_el,
@@ -1610,20 +1636,24 @@ pub(crate) fn handle_ck_command(key: &Key, ctrl: bool, ctx: AppCtx) -> bool {
             minibuf_msg.set("rustfmt not supported on wasm".to_string());
             true
         }
-        // C-k c: compile  (native only)
+        // C-k c: prompt for a compile command (prefilled with the last one
+        // run in this project, or `cargo check`). Enter executes it.
         #[cfg(not(target_arch = "wasm32"))]
         Key::Character(c) if !ctrl && c == "c" => {
             let Some(root) = crate::app::active_project_root(&ctx) else {
                 minibuf_msg.set("compile: no project loaded".to_string());
                 return true;
             };
-            let out = commands::run_compile(root.clone());
-            right_pane.set(Some(RightPaneState {
-                title: "*compilation*".to_string(),
-                output: out,
-                cwd: root,
-            }));
-            right_pane_selected.set(0);
+            let query = ctx
+                .compile_commands
+                .read()
+                .get(&root)
+                .cloned()
+                .unwrap_or_else(|| "cargo check".to_string());
+            let cursor = query.len();
+            ctx.compile_prompt
+                .clone()
+                .set(Some(crate::app::CompilePromptState { query, cursor }));
             true
         }
         // C-k s: save current buffer to its backing file (native only)
@@ -1662,7 +1692,17 @@ pub(crate) fn handle_ck_command(key: &Key, ctrl: bool, ctx: AppCtx) -> bool {
                 }
                 #[cfg(target_arch = "wasm32")]
                 let _ = (path, root);
-                current.set(idx.min(buffers.read().len().saturating_sub(1)));
+                let next_idx = idx.min(buffers.read().len().saturating_sub(1));
+                current.set(next_idx);
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::app::switch_active_project_to_buffer(&ctx, next_idx);
+                // The buffer under `current` is now different content
+                // (a shifted neighbour, or the previous-last index when the
+                // removed buffer was last). Resync the editor scroll to the
+                // new buffer's cursor.
+                let mut tick = ctx.scroll_to_cursor_tick;
+                let next = tick.peek().wrapping_add(1);
+                tick.set(next);
             }
             true
         }
@@ -1812,10 +1852,25 @@ pub(crate) fn handle_overlay_key(key: &Key, _ctrl: bool, ctx: AppCtx) {
             k,
         ) => match k {
             Key::Enter => {
-                let names: Vec<String> = buffers.read().iter().map(|b| b.name.clone()).collect();
-                let filtered = filter_strings(&names, &query);
+                let labels = {
+                    let bufs = buffers.read();
+                    buffer_switcher_labels(&bufs)
+                };
+                let filtered = filter_strings(&labels, &query);
                 if let Some((buf_idx, _)) = filtered.get(selected).cloned() {
+                    let changed = buf_idx != *current.read();
                     current.set(buf_idx);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    crate::app::switch_active_project_to_buffer(&ctx, buf_idx);
+                    if changed {
+                        // The editor's scroll signal is shared across buffers
+                        // and the body element's scrollTop survives the swap;
+                        // poke the cursor-into-view tick so both are re-synced
+                        // to the newly focused buffer.
+                        let mut tick = ctx.scroll_to_cursor_tick;
+                        let next = tick.peek().wrapping_add(1);
+                        tick.set(next);
+                    }
                 }
                 overlay.set(None);
                 minibuf_msg.set(String::new());
@@ -2118,6 +2173,92 @@ fn activate_file_picker(ctx: &AppCtx, query: &str, selected: usize) {
         let _ = (query, selected);
         overlay.set(None);
         minibuf_msg.set("file open not supported on wasm".to_string());
+    }
+}
+
+/// Handle a keystroke while the compile-command prompt is open. Mirrors
+/// the isearch pattern: a dedicated signal, captured before any other
+/// dispatch, with `Esc` / `C-g` clearing it and `Enter` running the command.
+#[cfg(not(target_arch = "wasm32"))]
+fn compile_prompt_handle_key(key: &Key, ctrl: bool, ctx: AppCtx) {
+    let mut compile_prompt = ctx.compile_prompt;
+    let mut minibuf_msg = ctx.minibuf_msg;
+    let mut right_pane = ctx.right_pane;
+    let mut right_pane_selected = ctx.right_pane_selected;
+
+    // Cancel: Esc or C-g.
+    if matches!(key, Key::Escape) || (ctrl && matches!(key, Key::Character(c) if c == "g")) {
+        compile_prompt.set(None);
+        minibuf_msg.set(String::new());
+        return;
+    }
+
+    let Some(mut state) = compile_prompt.peek().clone() else {
+        return;
+    };
+
+    match key {
+        Key::Enter => {
+            let trimmed = state.query.trim().to_string();
+            compile_prompt.set(None);
+            if trimmed.is_empty() {
+                minibuf_msg.set("compile: empty command".to_string());
+                return;
+            }
+            let Some(root) = crate::app::active_project_root(&ctx) else {
+                minibuf_msg.set("compile: no project loaded".to_string());
+                return;
+            };
+            ctx.compile_commands
+                .clone()
+                .write()
+                .insert(root.clone(), trimmed.clone());
+            let out = commands::run_command(&trimmed, root.clone());
+            right_pane.set(Some(RightPaneState {
+                title: "*compilation*".to_string(),
+                output: out,
+                cwd: root,
+            }));
+            right_pane_selected.set(0);
+            minibuf_msg.set(String::new());
+        }
+        Key::Backspace => {
+            if state.cursor > 0 {
+                let prev = prev_char_boundary(&state.query, state.cursor);
+                state.query.replace_range(prev..state.cursor, "");
+                state.cursor = prev;
+                compile_prompt.set(Some(state));
+            }
+        }
+        Key::Delete => {
+            if state.cursor < state.query.len() {
+                let next = next_char_boundary(&state.query, state.cursor);
+                state.query.replace_range(state.cursor..next, "");
+                compile_prompt.set(Some(state));
+            }
+        }
+        Key::ArrowLeft => {
+            state.cursor = prev_char_boundary(&state.query, state.cursor);
+            compile_prompt.set(Some(state));
+        }
+        Key::ArrowRight => {
+            state.cursor = next_char_boundary(&state.query, state.cursor);
+            compile_prompt.set(Some(state));
+        }
+        Key::Home => {
+            state.cursor = 0;
+            compile_prompt.set(Some(state));
+        }
+        Key::End => {
+            state.cursor = state.query.len();
+            compile_prompt.set(Some(state));
+        }
+        Key::Character(c) if !ctrl => {
+            state.query.insert_str(state.cursor, c);
+            state.cursor += c.len();
+            compile_prompt.set(Some(state));
+        }
+        _ => {}
     }
 }
 

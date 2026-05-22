@@ -2,6 +2,7 @@
 //! right-hand command output pane.
 
 use crate::app::{AppCtx, Overlay, Pane, RightPaneState};
+use crate::buffer::Buffer;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::commands;
 use crate::files;
@@ -44,8 +45,12 @@ pub fn OverlayView() -> Element {
         };
         let handle = undo_viewport_el.peek().clone();
         let Some(handle) = handle else { return };
-        let Some(node_handle) = handle.downcast::<NodeHandle>() else { return };
-        let Some(rect) = node_handle.client_rect_sync() else { return };
+        let Some(node_handle) = handle.downcast::<NodeHandle>() else {
+            return;
+        };
+        let Some(rect) = node_handle.client_rect_sync() else {
+            return;
+        };
         let viewport_h = rect.size.height;
         if viewport_h <= 0.0 {
             return;
@@ -65,10 +70,7 @@ pub fn OverlayView() -> Element {
         let Some(target_y) = target_y else { return };
         // Centre the node in the viewport, clamped to >= 0.
         let desired = (target_y - viewport_h * 0.5).max(0.0);
-        let _ = handle.scroll(
-            PixelsVector2D::new(0.0, desired),
-            ScrollBehavior::Instant,
-        );
+        let _ = handle.scroll(PixelsVector2D::new(0.0, desired), ScrollBehavior::Instant);
     });
 
     let overlay_opt = ctx.overlay.read().clone();
@@ -127,10 +129,10 @@ pub fn OverlayView() -> Element {
         }
         Overlay::BufferSwitcher { query, selected } => {
             let bufs = ctx.buffers.read();
-            let names: Vec<String> = bufs.iter().map(|b| b.name.clone()).collect();
+            let labels = buffer_switcher_labels(&bufs);
             let dirty: Vec<bool> = bufs.iter().map(|b| b.dirty).collect();
             drop(bufs);
-            let filtered = filter_strings(&names, &query);
+            let filtered = filter_strings(&labels, &query);
             let is_empty = filtered.is_empty();
             let selected = selected.min(filtered.len().saturating_sub(1));
             let start = selected.saturating_sub(MAX_RESULTS.saturating_sub(1));
@@ -708,4 +710,44 @@ fn render_path_picker(_ctx: &AppCtx, query: &str, _selected: usize) -> Element {
 
 pub fn filter_strings(items: &[String], query: &str) -> Vec<(usize, String)> {
     files::fuzzy_filter_str(items, query)
+}
+
+/// Labels for the buffer switcher. Unique basenames stay compact (`lib.rs`),
+/// but duplicate basenames include two parent components so projects are easy
+/// to tell apart (`dios/src/lib.rs`, `macroquad/src/lib.rs`).
+pub fn buffer_switcher_labels(buffers: &[Buffer]) -> Vec<String> {
+    let mut counts = std::collections::HashMap::<&str, usize>::new();
+    for buf in buffers {
+        *counts.entry(buf.name.as_str()).or_default() += 1;
+    }
+
+    buffers
+        .iter()
+        .map(|buf| {
+            if counts.get(buf.name.as_str()).copied().unwrap_or(0) > 1 {
+                buffer_tail_label(buf)
+            } else {
+                buf.name.clone()
+            }
+        })
+        .collect()
+}
+
+fn buffer_tail_label(buf: &Buffer) -> String {
+    let Some(path) = buf.path.as_ref() else {
+        return buf.name.clone();
+    };
+    let mut parts: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        return buf.name.clone();
+    }
+    let keep = parts.len().saturating_sub(3);
+    parts.drain(0..keep);
+    parts.join("/")
 }

@@ -63,6 +63,12 @@ impl GlobalProfiler {
         self.current_frame.clear();
     }
 
+    /// 
+    pub fn new_frame(&mut self) {
+       self.end_frame();
+       self.begin_frame();
+    }
+
     /// Close the current frame and dispatch its scopes as a
     /// [`FrameData`] to every registered sink.
     ///

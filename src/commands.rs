@@ -118,12 +118,16 @@ pub fn run_rustfmt_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("rustfmt failed: {detail}"))
 }
 
-/// Run `cargo check` under `cwd`. Streams both stdout and stderr (cargo
-/// writes its diagnostics to stderr).
+/// Run an arbitrary user-supplied command line under `cwd`. The string is
+/// whitespace-split into argv — no shell parsing, so quoted arguments and
+/// shell features (pipes, redirects, env-var expansion) won't work, but it
+/// covers the typical compile commands (`cargo check`, `cargo test foo`,
+/// `make -j8`). Streams both stdout and stderr.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn run_compile(cwd: PathBuf) -> CommandOutput {
+pub fn run_command(cmd: &str, cwd: PathBuf) -> CommandOutput {
     let out = CommandOutput::new();
     let out_clone = out.clone();
+    let cmd = cmd.to_string();
 
     std::thread::spawn(move || {
         out_clone.push(format!(
@@ -131,12 +135,17 @@ pub fn run_compile(cwd: PathBuf) -> CommandOutput {
             cwd.display()
         ));
         out_clone.push(String::new());
-        out_clone.push("cargo check --color=never".to_string());
+        out_clone.push(cmd.clone());
         out_clone.push(String::new());
 
-        let child = Command::new("cargo")
-            .arg("check")
-            .arg("--color=never")
+        let mut parts = cmd.split_whitespace();
+        let Some(program) = parts.next() else {
+            out_clone.push("(empty command)".to_string());
+            out_clone.mark_done();
+            return;
+        };
+        let child = Command::new(program)
+            .args(parts)
             .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -173,7 +182,7 @@ pub fn run_compile(cwd: PathBuf) -> CommandOutput {
                 let _ = child.wait();
             }
             Err(e) => {
-                out_clone.push(format!("cargo: failed to spawn: {e}"));
+                out_clone.push(format!("failed to spawn: {e}"));
             }
         }
         out_clone.push(String::new());

@@ -34,10 +34,31 @@ fn window_conf() -> Conf {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn start_puffin_server() -> Option<puffin_http::Server> {
+    if let Ok(addr) = std::env::var("PUFFIN_ADDR") {
+        puffin::set_scopes_on(true);
+        match puffin_http::Server::new(&addr) {
+            Ok(server) => {
+                eprintln!(
+                    "puffin server listening on {addr} — run `puffin_viewer --url {addr}` to connect"
+                );
+                return Some(server);
+            }
+            Err(e) => {
+                eprintln!("puffin server failed to start on {addr}: {e}");
+            }
+        }
+    }
+    None
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
+    let _ps = start_puffin_server();
+    
     let mut editor = Editor::new("fragment.glsl", DEFAULT_FRAGMENT_SHADER);
-
+    
     let ferris = load_texture("examples/ferris.png").await.unwrap();
     let pipeline_params = PipelineParams {
         depth_write: true,
@@ -69,7 +90,7 @@ async fn main() {
         let scene_h = screen_height() as i32;
         let t = get_time() as f32;
         let camera = Camera3D {
-            position: vec3(-15.0 + t.sin() * 2.0, 15.0,-5.0),
+            position: vec3(-15.0 + t.sin() * 2.0, 15.0, -5.0),
             up: vec3(0.0, 1.0, 0.0),
             target: vec3(0.0, 5.0, -5.0),
             ..Default::default()
