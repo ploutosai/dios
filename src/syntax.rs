@@ -1,9 +1,12 @@
 /// Simple syntax highlighters that tokenize source text into styled spans.
 use std::path::Path;
 
+mod keywords;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Language {
     Rust,
+    C,
     Markdown,
     Plain,
 }
@@ -16,6 +19,7 @@ impl Language {
             .or_else(|| Path::new(name).extension().and_then(|s| s.to_str()));
         match ext {
             Some("rs") => Language::Rust,
+            Some("c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx") => Language::C,
             Some("md" | "markdown") => Language::Markdown,
             _ => Language::Plain,
         }
@@ -24,9 +28,14 @@ impl Language {
     pub fn label(self) -> &'static str {
         match self {
             Language::Rust => "Rust",
+            Language::C => "C/C++",
             Language::Markdown => "Markdown",
             Language::Plain => "",
         }
+    }
+
+    pub fn uses_brace_indent(self) -> bool {
+        matches!(self, Language::Rust | Language::C)
     }
 }
 
@@ -73,23 +82,42 @@ impl TokenKind {
     }
 }
 
-const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while", "yield",
-];
+#[derive(Clone, Copy)]
+struct CodeSyntax {
+    keywords: &'static [&'static str],
+    builtin_types: &'static [&'static str],
+    bang_macros: bool,
+    lifetimes: bool,
+    hash_macro: bool,
+}
 
-const BUILTIN_TYPES: &[&str] = &[
-    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8", "u16",
-    "u32", "u64", "u128", "usize", "String", "Vec", "Option", "Result", "Box", "Rc", "Arc",
-    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Some", "None", "Ok", "Err",
-];
+impl CodeSyntax {
+    fn rust() -> Self {
+        Self {
+            keywords: keywords::rust::KEYWORDS,
+            builtin_types: keywords::rust::BUILTIN_TYPES,
+            bang_macros: true,
+            lifetimes: true,
+            hash_macro: false,
+        }
+    }
+
+    fn c() -> Self {
+        Self {
+            keywords: keywords::c::KEYWORDS,
+            builtin_types: keywords::c::BUILTIN_TYPES,
+            bang_macros: false,
+            lifetimes: false,
+            hash_macro: true,
+        }
+    }
+}
 
 pub fn highlight(source: &str, language: Language) -> Vec<Vec<Token>> {
     puffin::profile_function!();
     match language {
         Language::Rust => highlight_rust(source),
+        Language::C => highlight_c(source),
         Language::Markdown => highlight_markdown(source),
         Language::Plain => highlight_plain(source),
     }
@@ -124,7 +152,16 @@ fn highlight_plain(source: &str) -> Vec<Vec<Token>> {
 
 fn highlight_rust(source: &str) -> Vec<Vec<Token>> {
     let mut in_block_comment = false;
-    collect_lines(source, |line| tokenize_line(line, &mut in_block_comment))
+    collect_lines(source, |line| {
+        tokenize_line(line, &mut in_block_comment, CodeSyntax::rust())
+    })
+}
+
+fn highlight_c(source: &str) -> Vec<Vec<Token>> {
+    let mut in_block_comment = false;
+    collect_lines(source, |line| {
+        tokenize_line(line, &mut in_block_comment, CodeSyntax::c())
+    })
 }
 
 fn highlight_markdown(source: &str) -> Vec<Vec<Token>> {
@@ -271,7 +308,7 @@ fn tokenize_markdown_inline(s: &str, tokens: &mut Vec<Token>) {
     }
 }
 
-fn tokenize_line(line: &str, in_block_comment: &mut bool) -> Vec<Token> {
+fn tokenize_line(line: &str, in_block_comment: &mut bool, syntax: CodeSyntax) -> Vec<Token> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -348,9 +385,13 @@ fn tokenize_line(line: &str, in_block_comment: &mut bool) -> Vec<Token> {
             continue;
         }
 
-        // Char literal or lifetime
+        // Char literal or Rust lifetime
         if ch == '\'' && i + 1 < len && chars.get(i + 1) != Some(&' ') {
-            if i + 1 < len && chars[i + 1].is_alphabetic() && chars.get(i + 2) != Some(&'\'') {
+            if syntax.lifetimes
+                && i + 1 < len
+                && chars[i + 1].is_alphabetic()
+                && chars.get(i + 2) != Some(&'\'')
+            {
                 let start = i;
                 i += 1;
                 while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
@@ -414,7 +455,7 @@ fn tokenize_line(line: &str, in_block_comment: &mut bool) -> Vec<Token> {
             }
             let word: String = chars[start..i].iter().collect();
 
-            if i < len && chars[i] == '!' {
+            if syntax.bang_macros && i < len && chars[i] == '!' {
                 i += 1;
                 tokens.push(Token {
                     kind: TokenKind::Macro,
@@ -423,9 +464,9 @@ fn tokenize_line(line: &str, in_block_comment: &mut bool) -> Vec<Token> {
                 continue;
             }
 
-            let kind = if KEYWORDS.contains(&word.as_str()) {
+            let kind = if syntax.keywords.contains(&word.as_str()) {
                 TokenKind::Keyword
-            } else if BUILTIN_TYPES.contains(&word.as_str()) {
+            } else if syntax.builtin_types.contains(&word.as_str()) {
                 TokenKind::Type
             } else {
                 TokenKind::Plain
@@ -448,9 +489,13 @@ fn tokenize_line(line: &str, in_block_comment: &mut bool) -> Vec<Token> {
             continue;
         }
 
-        // Punctuation
+        // Preprocessor marker / punctuation
         tokens.push(Token {
-            kind: TokenKind::Punctuation,
+            kind: if syntax.hash_macro && ch == '#' {
+                TokenKind::Macro
+            } else {
+                TokenKind::Punctuation
+            },
             text: ch.to_string(),
         });
         i += 1;

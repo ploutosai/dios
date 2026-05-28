@@ -26,7 +26,7 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn rust_depth_after_line(line: &str, mut depth: usize) -> usize {
+fn brace_depth_after_line(line: &str, mut depth: usize) -> usize {
     let mut chars = line.chars().peekable();
     let mut in_string = false;
     let mut in_char = false;
@@ -619,9 +619,9 @@ impl Buffer {
         self.text()[start..end].to_string()
     }
 
-    pub fn retab_current_rust_line(&mut self) {
+    pub fn retab_current_brace_line(&mut self) {
         if let Some(selection) = self.selection() {
-            self.retab_rust_selection(selection);
+            self.retab_brace_selection(selection);
             return;
         }
 
@@ -633,7 +633,7 @@ impl Buffer {
             .take_while(|c| *c == ' ' || *c == '\t')
             .count();
 
-        let target_spaces = self.rust_indent_for_line(line) * 4;
+        let target_spaces = self.brace_indent_for_line(line) * 4;
         let current_prefix_bytes = line_text
             .char_indices()
             .nth(leading_ws)
@@ -665,7 +665,7 @@ impl Buffer {
         self.bump_version();
     }
 
-    fn retab_rust_selection(&mut self, selection: Selection) {
+    fn retab_brace_selection(&mut self, selection: Selection) {
         let (start_line, _) = self.offset_to_line_col(selection.start());
         let (mut end_line, end_col) = self.offset_to_line_col(selection.end());
         if end_col == 0 && end_line > start_line {
@@ -684,7 +684,7 @@ impl Buffer {
                 .nth(leading_ws)
                 .map(|(i, _)| i)
                 .unwrap_or(line_text.len());
-            let new_prefix = " ".repeat(self.rust_indent_for_line(line) * 4);
+            let new_prefix = " ".repeat(self.brace_indent_for_line(line) * 4);
             if current_prefix_bytes == new_prefix.len() && line_text.starts_with(&new_prefix) {
                 continue;
             }
@@ -736,10 +736,10 @@ impl Buffer {
         self.bump_version();
     }
 
-    fn rust_indent_for_line(&self, target_line: usize) -> usize {
+    fn brace_indent_for_line(&self, target_line: usize) -> usize {
         let mut depth = 0usize;
         for line in 0..target_line.min(self.line_count()) {
-            depth = rust_depth_after_line(&self.line_text(line), depth);
+            depth = brace_depth_after_line(&self.line_text(line), depth);
         }
         let current = self.line_text(target_line);
         if matches!(current.trim_start().chars().next(), Some('}' | ')' | ']')) {

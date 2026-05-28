@@ -196,9 +196,18 @@ pub enum Overlay {
         cursor: usize,
         selected: usize,
     },
-    BufferSwitcher { query: String, selected: usize },
-    RgPrompt { query: String, cursor: usize },
-    UndoTree { selected: usize, origin: usize },
+    BufferSwitcher {
+        query: String,
+        selected: usize,
+    },
+    RgPrompt {
+        query: String,
+        cursor: usize,
+    },
+    UndoTree {
+        selected: usize,
+        origin: usize,
+    },
 }
 
 #[derive(Clone)]

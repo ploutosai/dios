@@ -991,8 +991,8 @@ pub fn CodeEditor() -> Element {
                     }
                     Key::Enter => b.insert("\n"),
                     Key::Tab => {
-                        if language == syntax::Language::Rust {
-                            b.retab_current_rust_line();
+                        if language.uses_brace_indent() {
+                            b.retab_current_brace_line();
                         }
                     }
                     Key::Character(ref c) => {

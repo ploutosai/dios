@@ -242,8 +242,8 @@ fn looks_like_path(s: &str) -> bool {
     }
     let lower = s.to_ascii_lowercase();
     [
-        ".rs", ".toml", ".md", ".css", ".html", ".js", ".sh", ".c", ".h", ".cc",
-        ".hh", ".cpp", ".hpp", ".cxx", ".hxx",
+        ".rs", ".toml", ".md", ".css", ".html", ".js", ".sh", ".c", ".h", ".cc", ".hh", ".cpp",
+        ".hpp", ".cxx", ".hxx",
     ]
     .iter()
     .any(|ext| lower.ends_with(ext))
