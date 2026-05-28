@@ -103,7 +103,11 @@ pub fn run_ripgrep(pattern: &str, cwd: PathBuf) -> CommandOutput {
 /// Run rustfmt on one file, returning a compact status/error message.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_rustfmt_file(path: &Path) -> std::io::Result<String> {
-    let output = Command::new("rustfmt").arg(path).output()?;
+    let output = Command::new("rustfmt")
+        .arg("--edition")
+        .arg("2024")
+        .arg(path)
+        .output()?;
     if output.status.success() {
         return Ok(format!("Formatted {}", path.display()));
     }
@@ -233,14 +237,16 @@ fn parse_path_line_col(s: &str) -> Option<(&str, usize, usize)> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn looks_like_path(s: &str) -> bool {
-    s.contains('/')
-        || s.ends_with(".rs")
-        || s.ends_with(".toml")
-        || s.ends_with(".md")
-        || s.ends_with(".css")
-        || s.ends_with(".html")
-        || s.ends_with(".js")
-        || s.ends_with(".sh")
+    if s.contains('/') {
+        return true;
+    }
+    let lower = s.to_ascii_lowercase();
+    [
+        ".rs", ".toml", ".md", ".css", ".html", ".js", ".sh", ".c", ".h", ".cc",
+        ".hh", ".cpp", ".hpp", ".cxx", ".hxx",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

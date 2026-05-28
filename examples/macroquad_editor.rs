@@ -56,9 +56,9 @@ fn start_puffin_server() -> Option<puffin_http::Server> {
 #[macroquad::main(window_conf)]
 async fn main() {
     let _ps = start_puffin_server();
-    
+
     let mut editor = Editor::new("fragment.glsl", DEFAULT_FRAGMENT_SHADER);
-    
+
     let ferris = load_texture("examples/ferris.png").await.unwrap();
     let pipeline_params = PipelineParams {
         depth_write: true,

@@ -468,6 +468,14 @@ html, body, main, #main {
 }
 
 .overlay-label { color: var(--kw); font-weight: bold; }
+.overlay-query-window {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: hidden;
+    white-space: pre;
+}
 .overlay-query { color: var(--fg); }
 .overlay-caret {
     display: inline-block;

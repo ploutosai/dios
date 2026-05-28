@@ -201,6 +201,7 @@ pub fn CodeEditor() -> Element {
     let mut overlay = ctx.overlay;
     let mut ck_prefix = ctx.ck_prefix;
     let mut minibuf_msg = ctx.minibuf_msg;
+    let mut goto_line_prompt = ctx.goto_line_prompt;
 
     let cursor_blink = use_signal(|| false);
     let mut metrics = use_signal(Metrics::default);
@@ -525,6 +526,13 @@ pub fn CodeEditor() -> Element {
         }
         let target = *scroll_top.peek();
         if let Some(ref el) = body_el.peek().as_ref() {
+            // `el.scroll` clamps to `final_layout.scroll_height()`, which still
+            // reflects the previous buffer's content until Blitz runs layout
+            // again. `client_rect_sync` calls `doc.resolve(0.0)` and is the
+            // cheapest way to force a fresh layout from here.
+            if let Some(handle) = el.downcast::<NodeHandle>() {
+                let _ = handle.client_rect_sync();
+            }
             let _ = el.scroll(PixelsVector2D::new(0.0, target), ScrollBehavior::Instant);
             // Suppress the next ensure_cursor_visible's "moving up/down"
             // heuristic from immediately re-scrolling. Set the baseline to
@@ -594,6 +602,17 @@ pub fn CodeEditor() -> Element {
 
         last_cursor_line.set(row);
         if let Some(ref el) = body_el.peek().as_ref() {
+            // Blitz's `scroll()` clamps the target Y to
+            // `final_layout.scroll_height()` from the last completed layout
+            // pass. After a buffer switch this is the OLD buffer's height —
+            // so jumping deep into a freshly-opened taller file would clamp
+            // 18000 → 200, leaving the body parked inside the top-spacer's
+            // empty area (looks like a blank buffer until PgUp/PgDown's
+            // `ensure_cursor_visible` happens to call `client_rect_sync`,
+            // which does force a resolve). Force the resolve here too.
+            if let Some(handle) = el.downcast::<NodeHandle>() {
+                let _ = handle.client_rect_sync();
+            }
             let _ = el.scroll(
                 PixelsVector2D::new(0.0, new_scroll_y),
                 ScrollBehavior::Instant,
@@ -729,7 +748,13 @@ pub fn CodeEditor() -> Element {
                     return;
                 }
 
-                // --- 1b. Incremental search active: capture all keys ---
+                // --- 1b. Goto-line prompt active: capture all keys ---
+                if ctx.goto_line_prompt.read().is_some() {
+                    goto_line_prompt_handle_key(&key, ctrl, ctx);
+                    return;
+                }
+
+                // --- 1c. Incremental search active: capture all keys ---
                 if ctx.isearch.read().is_some() {
                     if crate::isearch::handle_key(&key, ctrl, ctx) {
                         ensure_cursor_visible();
@@ -737,7 +762,7 @@ pub fn CodeEditor() -> Element {
                     }
                 }
 
-                // --- 1c. Completion popup is active: nav / accept / dismiss.
+                // --- 1d. Completion popup is active: nav / accept / dismiss.
                 // Most keys close the popup so editing continues seamlessly;
                 // C-Space falls through so the dedicated handler below
                 // re-fires a new request.
@@ -800,6 +825,16 @@ pub fn CodeEditor() -> Element {
                     crate::isearch::start(ctx, crate::app::SearchDir::Backward);
                     return;
                 }
+                // C-g: prompt for a line number and jump there.
+                if ctrl && matches!(&key, Key::Character(c) if c.eq_ignore_ascii_case("g")) {
+                    goto_line_prompt.set(Some(crate::app::GotoLinePromptState {
+                        query: String::new(),
+                        cursor: 0,
+                    }));
+                    minibuf_msg.set(String::new());
+                    return;
+                }
+
                 // C-Space: trigger LSP completion at the cursor.
                 #[cfg(not(target_arch = "wasm32"))]
                 if ctrl && matches!(&key, Key::Character(c) if c == " ") {
@@ -837,12 +872,6 @@ pub fn CodeEditor() -> Element {
                             if buffers.write()[idx].redo() {
                                 ensure_cursor_visible();
                             }
-                            return;
-                        }
-                        Key::Character(ref c) if c == "g" => {
-                            // C-g: cancel any transient state
-                            minibuf_msg.set(String::new());
-                            ck_prefix.set(false);
                             return;
                         }
                         // C-c: copy selection to the OS clipboard. No-op when
@@ -1527,8 +1556,10 @@ pub(crate) fn handle_ck_command(key: &Key, ctrl: bool, ctx: AppCtx) -> bool {
                     "./".to_string()
                 }
             };
+            let cursor = initial_query.len();
             overlay.set(Some(Overlay::FilePicker {
                 query: initial_query,
+                cursor,
                 selected: 0,
             }));
             true
@@ -1792,56 +1823,122 @@ pub(crate) fn handle_overlay_key(key: &Key, _ctrl: bool, ctx: AppCtx) {
         (
             Overlay::FilePicker {
                 mut query,
+                cursor,
                 selected,
             },
             k,
-        ) => match k {
-            Key::Enter => {
-                activate_file_picker(&ctx, &query, selected);
+        ) => {
+            let mut cursor = cursor.min(query.len());
+            while cursor > 0 && !query.is_char_boundary(cursor) {
+                cursor -= 1;
             }
-            // Tab acts as Enter once the user has arrow-navigated to a
-            // specific result — they've picked something and want to open
-            // it. With `selected == 0` (no navigation yet) it still does
-            // path-mode autocomplete, since that's the natural Tab
-            // affordance when you're just typing.
-            Key::Tab if selected > 0 => {
-                activate_file_picker(&ctx, &query, selected);
-            }
-            Key::Tab => {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    if crate::files::is_path_query(&query) {
-                        if let Some(new_query) = path_picker_tab_complete(&ctx, &query) {
-                            overlay.set(Some(Overlay::FilePicker {
-                                query: new_query,
-                                selected: 0,
-                            }));
+            match k {
+                Key::Enter => {
+                    activate_file_picker(&ctx, &query, selected);
+                }
+                // Tab acts as Enter once the user has arrow-navigated to a
+                // specific result — they've picked something and want to open
+                // it. With `selected == 0` (no navigation yet) it still does
+                // path-mode autocomplete, since that's the natural Tab
+                // affordance when you're just typing.
+                Key::Tab if selected > 0 => {
+                    activate_file_picker(&ctx, &query, selected);
+                }
+                Key::Tab => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        if crate::files::is_path_query(&query) {
+                            if let Some(new_query) = path_picker_tab_complete(&ctx, &query) {
+                                let cursor = new_query.len();
+                                overlay.set(Some(Overlay::FilePicker {
+                                    query: new_query,
+                                    cursor,
+                                    selected: 0,
+                                }));
+                            }
                         }
                     }
                 }
+                Key::Backspace => {
+                    if cursor > 0 {
+                        let prev = prev_char_boundary(&query, cursor);
+                        query.replace_range(prev..cursor, "");
+                        cursor = prev;
+                    }
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected: 0,
+                    }));
+                }
+                Key::Delete => {
+                    if cursor < query.len() {
+                        let next = next_char_boundary(&query, cursor);
+                        query.replace_range(cursor..next, "");
+                    }
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected: 0,
+                    }));
+                }
+                Key::ArrowLeft => {
+                    cursor = prev_char_boundary(&query, cursor);
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected,
+                    }));
+                }
+                Key::ArrowRight => {
+                    cursor = next_char_boundary(&query, cursor);
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected,
+                    }));
+                }
+                Key::Home => {
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor: 0,
+                        selected,
+                    }));
+                }
+                Key::End => {
+                    cursor = query.len();
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected,
+                    }));
+                }
+                Key::ArrowDown => {
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected: selected + 1,
+                    }));
+                }
+                Key::ArrowUp => {
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected: selected.saturating_sub(1),
+                    }));
+                }
+                Key::Character(c) => {
+                    query.insert_str(cursor, c);
+                    cursor += c.len();
+                    overlay.set(Some(Overlay::FilePicker {
+                        query,
+                        cursor,
+                        selected: 0,
+                    }));
+                }
+                _ => {}
             }
-            Key::Backspace => {
-                query.pop();
-                overlay.set(Some(Overlay::FilePicker { query, selected: 0 }));
-            }
-            Key::ArrowDown => {
-                overlay.set(Some(Overlay::FilePicker {
-                    query,
-                    selected: selected + 1,
-                }));
-            }
-            Key::ArrowUp => {
-                overlay.set(Some(Overlay::FilePicker {
-                    query,
-                    selected: selected.saturating_sub(1),
-                }));
-            }
-            Key::Character(c) => {
-                query.push_str(c);
-                overlay.set(Some(Overlay::FilePicker { query, selected: 0 }));
-            }
-            _ => {}
-        },
+        }
 
         // ── Buffer switcher ──
         (
@@ -2262,6 +2359,87 @@ fn compile_prompt_handle_key(key: &Key, ctrl: bool, ctx: AppCtx) {
     }
 }
 
+/// Handle a keystroke while the goto-line prompt is open.
+fn goto_line_prompt_handle_key(key: &Key, ctrl: bool, ctx: AppCtx) {
+    let mut prompt = ctx.goto_line_prompt;
+    let mut minibuf_msg = ctx.minibuf_msg;
+    let mut buffers = ctx.buffers;
+
+    // Cancel: Esc or C-g.
+    if matches!(key, Key::Escape)
+        || (ctrl && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("g")))
+    {
+        prompt.set(None);
+        minibuf_msg.set(String::new());
+        return;
+    }
+
+    let Some(mut state) = prompt.peek().clone() else {
+        return;
+    };
+
+    match key {
+        Key::Enter => {
+            let trimmed = state.query.trim();
+            prompt.set(None);
+            let Ok(line_no) = trimmed.parse::<usize>() else {
+                minibuf_msg.set("goto line: enter a positive line number".to_string());
+                return;
+            };
+            if line_no == 0 {
+                minibuf_msg.set("goto line: line numbers start at 1".to_string());
+                return;
+            }
+
+            let idx = *ctx.current.read();
+            if let Some(buf) = buffers.write().get_mut(idx) {
+                buf.move_to(line_no - 1, 0);
+                minibuf_msg.set(String::new());
+                let mut tick = ctx.scroll_to_cursor_tick;
+                let next = tick.peek().wrapping_add(1);
+                tick.set(next);
+            }
+        }
+        Key::Backspace => {
+            if state.cursor > 0 {
+                let prev = prev_char_boundary(&state.query, state.cursor);
+                state.query.replace_range(prev..state.cursor, "");
+                state.cursor = prev;
+                prompt.set(Some(state));
+            }
+        }
+        Key::Delete => {
+            if state.cursor < state.query.len() {
+                let next = next_char_boundary(&state.query, state.cursor);
+                state.query.replace_range(state.cursor..next, "");
+                prompt.set(Some(state));
+            }
+        }
+        Key::ArrowLeft => {
+            state.cursor = prev_char_boundary(&state.query, state.cursor);
+            prompt.set(Some(state));
+        }
+        Key::ArrowRight => {
+            state.cursor = next_char_boundary(&state.query, state.cursor);
+            prompt.set(Some(state));
+        }
+        Key::Home => {
+            state.cursor = 0;
+            prompt.set(Some(state));
+        }
+        Key::End => {
+            state.cursor = state.query.len();
+            prompt.set(Some(state));
+        }
+        Key::Character(c) if !ctrl && c.chars().all(|ch| ch.is_ascii_digit()) => {
+            state.query.insert_str(state.cursor, c);
+            state.cursor += c.len();
+            prompt.set(Some(state));
+        }
+        _ => {}
+    }
+}
+
 /// Tab in path mode. If a unique entry matches the suffix, replace it with
 /// that entry's full name (and a trailing `/` if it's a directory); if many
 /// match, extend the suffix to the longest common prefix. Returns the new
@@ -2340,8 +2518,10 @@ fn handle_path_picker_enter(ctx: &AppCtx, query: &str, selected: usize) {
         if !s.ends_with('/') {
             s.push('/');
         }
+        let cursor = s.len();
         overlay.set(Some(Overlay::FilePicker {
             query: s,
+            cursor,
             selected: 0,
         }));
         return;

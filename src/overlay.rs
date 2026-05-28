@@ -21,6 +21,10 @@ const RIGHT_BODY_PAD_TOP: f64 = 4.0;
 const RIGHT_SCROLL_MARGIN_LINES: usize = 2;
 
 const MAX_RESULTS: usize = 20;
+/// Approximate Liberation Mono character width at `.overlay-prompt`'s 20px font.
+/// Used only to keep the file-picker caret scrolled into view.
+const OVERLAY_QUERY_CHAR_W: f64 = 12.0;
+const OVERLAY_QUERY_SCROLL_MARGIN: f64 = 36.0;
 
 #[component]
 pub fn OverlayView() -> Element {
@@ -33,6 +37,52 @@ pub fn OverlayView() -> Element {
     // it past the visible region. Has to live at component top-level so
     // hook order stays consistent across overlay-kind transitions.
     let mut undo_viewport_el: Signal<Option<MountedEvent>> = use_signal(|| None);
+    let mut file_picker_query_el: Signal<Option<MountedEvent>> = use_signal(|| None);
+    let mut file_picker_query_scroll = use_signal(|| 0.0f64);
+
+    // Keep the file picker's logical caret visible when the query is wider
+    // than the prompt. Home/End and cursor movement update Overlay::cursor;
+    // this effect mirrors that to the horizontal scroll offset.
+    use_effect(move || {
+        let overlay = ctx.overlay.read().clone();
+        let Some(Overlay::FilePicker { query, cursor, .. }) = overlay else {
+            file_picker_query_scroll.set(0.0);
+            return;
+        };
+        let Some(handle) = file_picker_query_el.read().clone() else {
+            return;
+        };
+        let viewport_w = handle
+            .downcast::<NodeHandle>()
+            .and_then(|h| h.client_rect_sync())
+            .map(|r| r.size.width)
+            .unwrap_or(0.0);
+        if viewport_w <= 0.0 {
+            return;
+        }
+        let cursor = clamp_cursor_to_char_boundary(&query, cursor);
+        let cursor_col = query[..cursor].chars().count() as f64;
+        let content_w = (query.chars().count() as f64) * OVERLAY_QUERY_CHAR_W;
+        let max_scroll = (content_w - viewport_w).max(0.0);
+        let cursor_x = cursor_col * OVERLAY_QUERY_CHAR_W;
+        let stored_scroll = *file_picker_query_scroll.peek();
+        let scroll = stored_scroll.min(max_scroll);
+        let desired = if cursor == 0 {
+            0.0
+        } else if cursor_x < scroll + OVERLAY_QUERY_SCROLL_MARGIN {
+            (cursor_x - OVERLAY_QUERY_SCROLL_MARGIN).max(0.0)
+        } else if cursor_x > scroll + viewport_w - OVERLAY_QUERY_SCROLL_MARGIN {
+            (cursor_x + OVERLAY_QUERY_SCROLL_MARGIN - viewport_w).max(0.0)
+        } else {
+            scroll
+        }
+        .min(max_scroll);
+
+        if (desired - stored_scroll).abs() > 0.5 {
+            let _ = handle.scroll(PixelsVector2D::new(desired, 0.0), ScrollBehavior::Instant);
+            file_picker_query_scroll.set(desired);
+        }
+    });
 
     // Auto-scroll the undo-tree viewport so the selected node is in view.
     // Re-runs whenever the overlay signal changes — keyboard navigation
@@ -79,10 +129,17 @@ pub fn OverlayView() -> Element {
     };
 
     match overlay {
-        Overlay::FilePicker { query, selected } => {
+        Overlay::FilePicker {
+            query,
+            cursor,
+            selected,
+        } => {
             if files::is_path_query(&query) {
-                render_path_picker(&ctx, &query, selected)
+                render_path_picker(&ctx, &query, cursor, selected, file_picker_query_el)
             } else {
+                let cursor = clamp_cursor_to_char_boundary(&query, cursor);
+                let before = &query[..cursor];
+                let after = &query[cursor..];
                 let files = ctx.file_index.read().clone();
                 // Hide dotfiles from the project picker unless the user
                 // started the query with `.` (mirrors the path-picker rule).
@@ -107,8 +164,15 @@ pub fn OverlayView() -> Element {
                         div { class: "overlay-box",
                             div { class: "overlay-prompt",
                                 span { class: "overlay-label", "Find file: " }
-                                span { class: "overlay-query", "{query}" }
-                                span { class: "overlay-caret", " " }
+                                span {
+                                    class: "overlay-query-window",
+                                    onmounted: move |evt: MountedEvent| {
+                                        file_picker_query_el.set(Some(evt));
+                                    },
+                                    span { class: "overlay-query", "{before}" }
+                                    span { class: "overlay-caret", " " }
+                                    span { class: "overlay-query", "{after}" }
+                                }
                             }
                             div { class: "overlay-list",
                                 for (i, item) in visible.into_iter().enumerate() {
@@ -483,7 +547,16 @@ fn RgLine(text: String) -> Element {
 }
 
 fn is_path_like(s: &str) -> bool {
-    s.contains('/') || s.ends_with(".rs") || s.ends_with(".toml") || s.ends_with(".md")
+    if s.contains('/') {
+        return true;
+    }
+    let lower = s.to_ascii_lowercase();
+    [
+        ".rs", ".toml", ".md", ".css", ".html", ".js", ".sh", ".c", ".h", ".cc",
+        ".hh", ".cpp", ".hpp", ".cxx", ".hxx",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
 }
 
 fn handle_right_pane_key(evt: &Event<KeyboardData>, ctx: AppCtx, result_count: usize) {
@@ -652,7 +725,16 @@ pub fn compute_path_picker_view(ctx: &AppCtx, query: &str) -> PathPickerView {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_path_picker(ctx: &AppCtx, query: &str, selected: usize) -> Element {
+fn render_path_picker(
+    ctx: &AppCtx,
+    query: &str,
+    cursor: usize,
+    selected: usize,
+    mut query_el: Signal<Option<MountedEvent>>,
+) -> Element {
+    let cursor = clamp_cursor_to_char_boundary(query, cursor);
+    let before = &query[..cursor];
+    let after = &query[cursor..];
     let view = compute_path_picker_view(ctx, query);
     let is_empty = view.matches.is_empty();
     let selected = selected.min(view.matches.len().saturating_sub(1));
@@ -670,8 +752,15 @@ fn render_path_picker(ctx: &AppCtx, query: &str, selected: usize) -> Element {
             div { class: "overlay-box",
                 div { class: "overlay-prompt",
                     span { class: "overlay-label", "Find file: " }
-                    span { class: "overlay-query", "{query}" }
-                    span { class: "overlay-caret", " " }
+                    span {
+                        class: "overlay-query-window",
+                        onmounted: move |evt: MountedEvent| {
+                            query_el.set(Some(evt));
+                        },
+                        span { class: "overlay-query", "{before}" }
+                        span { class: "overlay-caret", " " }
+                        span { class: "overlay-query", "{after}" }
+                    }
                 }
                 div { class: "overlay-list",
                     for (orig_i, (name, is_dir)) in visible.into_iter() {
@@ -691,14 +780,30 @@ fn render_path_picker(ctx: &AppCtx, query: &str, selected: usize) -> Element {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn render_path_picker(_ctx: &AppCtx, query: &str, _selected: usize) -> Element {
+fn render_path_picker(
+    _ctx: &AppCtx,
+    query: &str,
+    cursor: usize,
+    _selected: usize,
+    mut query_el: Signal<Option<MountedEvent>>,
+) -> Element {
+    let cursor = clamp_cursor_to_char_boundary(query, cursor);
+    let before = &query[..cursor];
+    let after = &query[cursor..];
     rsx! {
         div { class: "overlay",
             div { class: "overlay-box",
                 div { class: "overlay-prompt",
                     span { class: "overlay-label", "Find file: " }
-                    span { class: "overlay-query", "{query}" }
-                    span { class: "overlay-caret", " " }
+                    span {
+                        class: "overlay-query-window",
+                        onmounted: move |evt: MountedEvent| {
+                            query_el.set(Some(evt));
+                        },
+                        span { class: "overlay-query", "{before}" }
+                        span { class: "overlay-caret", " " }
+                        span { class: "overlay-query", "{after}" }
+                    }
                 }
                 div { class: "overlay-list",
                     div { class: "overlay-empty", "(path mode not available on wasm)" }
@@ -706,6 +811,14 @@ fn render_path_picker(_ctx: &AppCtx, query: &str, _selected: usize) -> Element {
             }
         }
     }
+}
+
+fn clamp_cursor_to_char_boundary(s: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(s.len());
+    while cursor > 0 && !s.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
 }
 
 pub fn filter_strings(items: &[String], query: &str) -> Vec<(usize, String)> {

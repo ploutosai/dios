@@ -404,6 +404,7 @@ fn EmbeddedEditorApp() -> Element {
         completion: use_signal(|| None),
         compile_commands: use_signal(std::collections::HashMap::new),
         compile_prompt: use_signal(|| None),
+        goto_line_prompt: use_signal(|| None),
     };
     use_context_provider(|| ctx);
 

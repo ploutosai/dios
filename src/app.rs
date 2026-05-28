@@ -95,11 +95,21 @@ pub struct AppCtx {
     /// lives inline in the minibuffer (no centered overlay box), and a
     /// dedicated signal makes the Minibuffer's subscription unambiguous.
     pub compile_prompt: Signal<Option<CompilePromptState>>,
+    /// Active goto-line prompt rendered in the minibuffer.
+    pub goto_line_prompt: Signal<Option<GotoLinePromptState>>,
 }
 
 /// State of an active compile-command prompt in the minibuffer.
 #[derive(Clone)]
 pub struct CompilePromptState {
+    pub query: String,
+    /// Byte offset within `query` where the caret sits.
+    pub cursor: usize,
+}
+
+/// State of an active goto-line prompt in the minibuffer.
+#[derive(Clone)]
+pub struct GotoLinePromptState {
     pub query: String,
     /// Byte offset within `query` where the caret sits.
     pub cursor: usize,
@@ -181,7 +191,11 @@ pub struct ISearch {
 
 #[derive(Clone)]
 pub enum Overlay {
-    FilePicker { query: String, selected: usize },
+    FilePicker {
+        query: String,
+        cursor: usize,
+        selected: usize,
+    },
     BufferSwitcher { query: String, selected: usize },
     RgPrompt { query: String, cursor: usize },
     UndoTree { selected: usize, origin: usize },
@@ -244,6 +258,7 @@ pub fn App() -> Element {
         completion: use_signal(|| None),
         compile_commands: use_signal(HashMap::new),
         compile_prompt: use_signal(|| None),
+        goto_line_prompt: use_signal(|| None),
     };
     use_context_provider(|| ctx);
 
@@ -466,8 +481,10 @@ pub fn switch_active_project(ctx: &AppCtx, new_root: PathBuf) {
 
 /// Update the active project to match buffer `idx`, if that buffer has a
 /// backing file/project. For files without a `.git` / `.projectile` ancestor,
-/// keep the current active root when the file is inside it; otherwise fall
-/// back to the file's parent directory.
+/// fall back to the file's parent directory. Do not keep the previous active
+/// root just because it happens to contain the file: that can leave the
+/// project pill/search/compile target stuck on an ancestor or on another
+/// buffer's project after an explicit buffer switch.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn switch_active_project_to_buffer(ctx: &AppCtx, idx: usize) {
     let (crate_root, path) = {
@@ -482,11 +499,6 @@ pub fn switch_active_project_to_buffer(ctx: &AppCtx, idx: usize) {
     }
 
     let Some(path) = path else { return };
-    if let Some(active) = ctx.project_root.read().clone() {
-        if path.starts_with(&active) {
-            return;
-        }
-    }
     if let Some(parent) = path.parent() {
         switch_active_project(ctx, parent.to_path_buf());
     }
@@ -597,6 +609,7 @@ fn Minibuffer() -> Element {
     let ck = *ctx.ck_prefix.read();
     let isearch = ctx.isearch.read().clone();
     let compile_prompt = ctx.compile_prompt.read().clone();
+    let goto_line_prompt = ctx.goto_line_prompt.read().clone();
 
     if let Some(s) = isearch {
         let label = match s.direction {
@@ -621,6 +634,20 @@ fn Minibuffer() -> Element {
         return rsx! {
             div { id: "minibuffer",
                 span { class: "mb-search-label", "Compile: " }
+                span { class: "mb-search-query", "{before}" }
+                span { class: "mb-search-caret", " " }
+                span { class: "mb-search-query", "{after}" }
+            }
+        };
+    }
+
+    if let Some(GotoLinePromptState { query, cursor }) = goto_line_prompt {
+        let cursor = cursor.min(query.len());
+        let before = &query[..cursor];
+        let after = &query[cursor..];
+        return rsx! {
+            div { id: "minibuffer",
+                span { class: "mb-search-label", "Goto line: " }
                 span { class: "mb-search-query", "{before}" }
                 span { class: "mb-search-caret", " " }
                 span { class: "mb-search-query", "{after}" }
