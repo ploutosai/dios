@@ -77,6 +77,13 @@ impl EventHandler for BlitzMiniquadApp {
         miniquad::window::schedule_update();
     }
 
+    fn window_restored_event(&mut self) {
+        // Miniquad reports focus gain as a "restored" event on several
+        // platforms. In blocking-event-loop mode, explicitly wake the loop so
+        // the window repaints when focus returns.
+        miniquad::window::schedule_update();
+    }
+
     fn mouse_motion_event(&mut self, x: f32, y: f32) {
         self.view.mouse_motion(x, y);
     }
